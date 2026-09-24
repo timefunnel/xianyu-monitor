@@ -366,9 +366,15 @@ export async function qrLogin({
   const refreshed = await qr.refreshToken();
   if (!refreshed.ok) logger?.warn?.(`刷新 mtop 令牌失败（不致命，首次搜索会自己重建）：${refreshed.error}`, 'login');
 
-  await store.save(qr.jar);
   // `unb` 才是"登录成功"的证据（三家参考实现都硬校验它）；cookie2 登录页那步就会给，
   // 所以两个都要查：只有 cookie2 而没 unb，等于拿到一份看起来正常、实际没登录的凭据。
   const missing = [...REQUIRED_COOKIES, 'unb'].filter((name) => !qr.jar.has(name));
-  return { ok: missing.length === 0, cookies: qr.jar.size, missing };
+  if (missing.length > 0) {
+    // **绝不能落盘**：写进去就把磁盘上那份还能用的登录态覆盖掉了，而这次登录其实没成功。
+    // 登录命令跑失败却顺手毁掉可用凭据，是最不该有的失败方式。
+    logger?.error?.(`登录没拿到 ${missing.join('、')}，保留原有 cookie 文件不动`, 'login');
+    return { ok: false, cookies: 0, missing };
+  }
+  await store.save(qr.jar);
+  return { ok: true, cookies: qr.jar.size, missing: [] };
 }

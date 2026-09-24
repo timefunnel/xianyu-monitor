@@ -152,14 +152,20 @@ test('二维码过期时给出人话，而不是干等', async () => {
   );
 });
 
-test('缺凭据时 ok 为 false 并报出缺件——不能让残缺的登录态冒充成功', async () => {
+test('缺凭据时 ok 为 false 并报出缺件，而且**不覆盖**原有的登录态', async () => {
   // cookie2 在登录页那步就会下发，所以真正要盯的是「登录页给了 cookie2、但登录没拿到 unb」这种
   // 看起来正常、实际没登录的情况。
   const noUnbStore = makeStore();
+  // 先放一份"能用"的登录态进去，然后跑一次注定失败的登录
+  const good = new Map([['unb', { name: 'unb', value: 'old-good', domain: '.goofish.com', path: '/' }]]);
+  await noUnbStore.save(good);
+  const before = readFileSync(noUnbStore.file, 'utf8');
+
   const noUnb = fakePassport({ loginCookies: ['_tb_token_=abc; Path=/', 'cookie2=fresh; Path=/'] });
   const noUnbResult = await qrLogin({ store: noUnbStore, logger: silentLogger, fetchImpl: noUnb.fetchImpl, pollIntervalMs: 1 });
   assert.equal(noUnbResult.ok, false);
   assert.deepEqual(noUnbResult.missing, ['unb'], 'unb 才是登录成功的证据');
+  assert.equal(readFileSync(noUnbStore.file, 'utf8'), before, '登录失败绝不能把原来那份能用的登录态覆盖掉');
 
   const noCookie2Store = makeStore();
   const noCookie2 = fakePassport({ landingCookies: ['XSRF-TOKEN=csrf-1; Path=/'], loginCookies: ['unb=12345; Path=/'] });
