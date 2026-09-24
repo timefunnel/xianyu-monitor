@@ -18,7 +18,7 @@
 以下都是实测结论，直接决定方案可行性：
 
 1. **搜索接口要求登录**。未登录调用 `mtop.taobao.idlemtopsearch.pc.search` 会返回错误码并带上登录页地址，拿不到任何商品。所以必须先扫码登录。
-2. **登录必须用有头浏览器**。`headless: true` 时闲鱼首页直接返回「非法访问」，二维码不会渲染。所以配置默认 `headless: false`，**服务器上扫码那一步要用 `xvfb-run`**。（监控本身不启浏览器，见「请求次数」一节。）
+2. **登录默认不需要浏览器**。扫码登录走纯 HTTP，二维码用半块字符画在终端里（`node src/cli.mjs login`），手机扫屏幕即可。只有 `--browser` 那条降级路径才需要**有头**浏览器——`headless: true` 时闲鱼首页返回「非法访问」、二维码不渲染，所以配置默认 `headless: false`，服务器上那条路要配 `xvfb-run`。
 3. **搜索接口有频率限制，做不到「秒级」**。实测短时间内连续 3 次搜索就返回 `RGV587_ERROR::SM::哎哟喂,被挤爆啦`，冷却约 3 分钟。所以现实节奏是**每个任务 60~120 秒一次**，本工具的定位是「捡漏提醒」而不是「抢拍工具」；被限流时主循环会直接进入最长冷却（默认 300 秒）并告警。
 4. **网页端不能下单**。goofish.com 支持搜索、比价、一键沟通，但下单要回 App。所以本工具的终点是「推送 + 你点链接去 App 下单」。
 
@@ -127,7 +127,7 @@ ports:
 npm install
 cp config.example.json config.json     # 改成你自己的关键词
 cp .env.example .env                   # 填通知渠道密钥（也可以先跳过：控制台的「配置」页有结构化表单）
-npm run login                          # 扫码登录：登录态存进 data/browser-profile，并自动写入 data/cookies.json（监控用它）
+npm run login                          # 扫码登录：二维码直接打在终端里，手机扫屏幕即可，不需要浏览器
 npm run check                          # 校验配置，不联网
 npm run test:notify                    # 给所有渠道发一条测试消息
 npm start                              # 开始监控
@@ -148,41 +148,43 @@ node src/cli.mjs once --task macbook-air-m2 --notify   # 确认无误后再真�
 
 ## 部署到云服务器 / NAS
 
-服务器没有图形界面，而扫码登录需要真实的有头浏览器，因此**登录那一步要跑在 `xvfb-run` 下**（Compose 镜像的 entrypoint 已经自动包了一层）。监控本身不启浏览器，长时间运行不需要图形界面。
-
-### 完全没有浏览器也能跑
-
-**监控侧一个浏览器都不需要。** 浏览器只在「扫码登录」和「点开看商品」用到，而登录可以做在别的机器上——登录态就是一个小文件：
+**扫码登录默认走纯 HTTP，二维码直接打在终端里**——不需要浏览器，也不需要图形界面：
 
 ```bash
-# ① 在你自己的电脑上（有浏览器的那台）
-npm run login                  # 扫码，成功后会写出 data/cookies.json
-
-# ② 把这个文件拷到服务器（几 KB），位置就是配置里的 data/cookies.json
-scp data/cookies.json  用户@服务器:/opt/xianyu-monitor/data/cookies.json
-scp config.json        用户@服务器:/opt/xianyu-monitor/config.json
-scp .env               用户@服务器:/opt/xianyu-monitor/.env
-
-# ③ 服务器上直接跑，不需要 Chromium、不需要 Xvfb
-npm install --omit=dev         # 只装 Node 依赖；不用执行 npx playwright install
-node src/cli.mjs check         # 会明确告诉你：http 模式下监控用不到 Playwright
-node src/cli.mjs web
+node src/cli.mjs login          # 终端里出现二维码，手机扫屏幕即可
 ```
 
-这样服务器上省掉 **Chromium（约 150MB）+ Xvfb + profile 目录（约 200MB）**，只剩一个 Node 进程。代价是**会话过期时要重新走一遍①②**（平台要求扫码，躲不掉）。
+所以整条链路（登录 + 监控）都可以没有 Chromium、没有 Xvfb。想用浏览器登录（例如想看窗口里的码，或 HTTP 路径出问题时）加 `--browser`，那条路仍然需要 `xvfb-run`。
 
-> 这条路之所以现在才成立，是因为登录态从「浏览器 profile」改成了「`cookies.json` 一个文件」——以前要拷 200MB 的 profile，还得两边架构/版本接近；现在是一个几 KB 的 JSON，跨平台直接可用。
+### 服务器上登录：两条路都行
 
-想连这一步都省掉（在无图形界面的服务器上直接扫码），需要在服务端实现 passport 的二维码登录（纯 HTTP）+ 自己渲染二维码。那是另一件事，见下方「还能不能更进一步」。
+**① 直接在服务器终端扫码**（推荐，什么都不用装）：
+
+```bash
+node src/cli.mjs login
+```
+
+二维码是用半块字符画在终端里的，手机对着屏幕扫即可。**不需要 Chromium、不需要 Xvfb、不需要图形界面**，容器里也一样。登录态直接写进 `data/cookies.json`。
+
+> 这条路顺带解决了一个更隐蔽的问题：浏览器版扫码登录依赖登录页的 DOM 与 iframe，**闲鱼改一次版就失效**（开源项目 `goofish-cli` 的 `auth login --qr` 就是这么挂的）。纯 HTTP 依赖接口契约，改版影响不到它。
+
+**② 在别的机器上登录，把 cookie 文件拷过去**：
+
+```bash
+# 在自己电脑上
+npm run login                                  # 扫码，写出 data/cookies.json
+scp data/cookies.json 用户@服务器:/opt/xianyu-monitor/data/
+```
+
+几 KB 的 JSON，跨平台直接可用（以前要拷 200MB 的浏览器 profile，还要求两边架构/版本接近）。
 
 ### 服务器上到底需要什么
 
 | 需要 | 什么时候用 | 说明 |
 | --- | --- | --- |
-| **Node.js ≥ 20.11** | 一直 | 只用内置模块；`npm install` 之后只有一个运行时依赖（Playwright） |
+| **Node.js ≥ 20.11** | 一直 | 运行时依赖只有 `qrcode-generator`（纯 JS，用来画终端二维码）；Playwright 只在 `--browser` 登录、`export-cookies`、点开看商品时才会被加载 |
 | `data/cookies.json` | 监控运行期间 | **登录态就在这里**，靠 volume 挂载持久化 |
-| **Xvfb**（或任意 `$DISPLAY`） | **只有扫码登录那一步** | 无头模式下闲鱼返回「非法访问」、二维码不渲染。监控不需要它 |
-| Chromium / Chrome | 同上 | 只为登录开一次；不装也行，改用系统已装的浏览器（`browser.channel: "chrome"`） |
+| Xvfb + Chromium | **只在用 `--browser` 登录时** | 默认的纯 HTTP 登录不需要它们；监控也不需要 |
 
 由此得到的几条现实结论：
 
@@ -191,17 +193,20 @@ node src/cli.mjs web
 - **时区**：通知里的相对时间（"3 分钟前"）与时区无关，只有少数带绝对时间的文案受影响。宿主机是 UTC 时建议设 `TZ=Asia/Shanghai`（systemd 单元与 compose 里都给上了）。
 - **远端访问控制台**必须同时设 `web.host` 与 `web.token`，否则程序拒绝监听（见「远程访问」）。
 - **远端访问时，「点开看商品」直接在你的浏览器里打开**——不会再让服务器上那个你看不见的浏览器去开。
-- **登录态过期后要重新扫码**，这一步绕不开（平台要求），仍然需要 `xvfb-run`。
+- **登录态过期后要重新扫码**，这一步绕不开（平台要求），但**在服务器终端里就能完成**。
 
-### 还能不能更进一步（把浏览器也去掉）
+### 浏览器现在只剩一个降级位
 
-剩下的浏览器用途只有两处：**扫码登录**，以及上面那条「点开看商品」的便利（远端访问时已经自动绕过）。
+登录已经改走纯 HTTP（见上），所以浏览器在整条链路里只剩两处可选用途：
 
-要把扫码登录也做成纯 HTTP，得在服务端自己走 passport 的二维码流程：调接口拿二维码 → 轮询扫码结果 → 收 `Set-Cookie`。技术上可行，开源客户端里就有这么做的；但要额外解决「**把二维码画出来给手机扫**」——终端 ASCII 或前端渲染，都得先有二维码编码器。
+| 用途 | 是否必需 |
+| --- | --- |
+| `login --browser` | **不必需**。默认的终端二维码路径失败时的降级手段 |
+| 点开看商品时借带登录态的窗口打开 | **不必需**。远端访问时已自动改为在你的浏览器里打开 |
 
-**现在没做的原因有两条**：一是这属于「调用未公开接口」，与本项目「不逆向接口」的自我约束有张力；二是这类改动**必须用真实扫码验证**才算数，在风控正紧的时候去试登录流程不划算。
+也就是说：**不装 Chromium、不装 Xvfb，这个项目也能完整跑起来**（登录 + 监控 + 控制台）。真要把 Playwright 依赖也删掉，只差「点开看商品」改成纯 HTTP 打开这一步。
 
-在那之前，**「拷 `cookies.json`」已经让服务器完全不需要浏览器**，覆盖了绝大多数部署场景。
+**一句必须说清的话**：纯 HTTP 登录走的是网页端 passport 的二维码流程，它**没有公开文档**——和本项目已经复刻的 mtop 签名属于同一层性质。我们做的是**独立实现**（照协议事实重写，没有抄任何实现的代码：三个现成的纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件）。不想用这条路就用 `--browser`。
 
 ### 方式一：Docker Compose（推荐）
 
@@ -247,10 +252,10 @@ xvfb-run -a node src/cli.mjs run
 
 | 位置 | 谁在用 | 说明 |
 | --- | --- | --- |
-| `data/browser-profile/` | 扫码登录、点开看商品 | 完整浏览器 profile；**浏览器只在需要时才启动** |
-| `data/cookies.json` | **监控搜索**（http 模式） | 从 profile 导出；mtop 响应里的 `Set-Cookie` 会回写到这里，所以它是持续更新的 |
+| `data/cookies.json` | **监控搜索**（http 模式） | 登录态的**唯一来源**：扫码登录直接写它，mtop 响应里的 `Set-Cookie` 会持续回写 |
+| `data/browser-profile/` | 仅 `--browser` 登录 | 用 `--browser` 登录时才会用到；默认的纯 HTTP 登录不碰它 |
 
-`npm run login` 扫码成功后会**自动**写第二份，不用额外操作。如果 profile 里本来就有有效登录态（比如你一直用浏览器模式跑），**不必重新扫码**，一条命令就能切换到直连：
+纯 HTTP 扫码登录会**直接**写 `data/cookies.json`，不需要额外操作。如果你以前一直用浏览器模式跑、profile 里已经有有效登录态，**不必重新扫码**，一条命令就能把登录态落到文件：
 
 ```bash
 node src/cli.mjs export-cookies
@@ -260,24 +265,21 @@ node src/cli.mjs export-cookies
 
 > `cookie2` 是**会话级 cookie**（关掉浏览器即失效），而 mtop 必须带它。以前这条续期是靠每次加载页面被动拿到的；搜索改走直连之后，只剩 mtop 响应里的 `Set-Cookie` 这一条途径——所以 cookie 文件会被持续回写，别把它改成只读。
 
-闲鱼网页端是**扫码登录**，二维码几分钟就失效，所以服务器上没法「打开浏览器扫一下」。三种可行做法：
+闲鱼网页端是**扫码登录**，二维码几分钟就失效。现在**在服务器终端里直接就能扫**，不必再折腾截图或图形界面：
 
-1. **二维码截图模式（默认，两种环境通用）**
+1. **终端二维码（默认，推荐）**
    ```bash
-   npm run login                                  # 本机：弹出窗口，扫窗口里的码即可
-   docker compose run --rm xianyu-monitor node src/cli.mjs login   # 服务器：写图片
+   node src/cli.mjs login
    ```
-   首页加载后登录弹窗会**自动弹出**（实测 `passport.goofish.com/mini_login.htm` 的 iframe 就在视口内，856×454），命令一边保持有头渲染，一边把整页截图写到 `data/login-qr.png` 并每 5 秒刷新。服务器上你从 NAS 文件管理器 / SFTP / 共享目录打开这张图，用闲鱼 App 扫码；扫码成功后命令会自动检测到并退出。
+   二维码用半块字符画在终端里，手机对着屏幕扫即可。纯 HTTP 实现，**不需要浏览器、不需要图形界面**，容器里也一样。扫码确认后会自动完成登录并把登录态写进 `data/cookies.json`。`--timeout 600` 可以把等待时间放宽到 10 分钟。
 
+2. **浏览器路径（降级手段）**：HTTP 路径出问题时加 `--browser`，回到"开有头浏览器 + 二维码截图"的老路。
    ```bash
-   node src/cli.mjs login --out /volume1/share/login-qr.png --timeout 600
+   node src/cli.mjs login --browser --out /volume1/share/login-qr.png
    ```
+   注意这条**必须**在有头模式下运行（闲鱼对无头请求返回「非法访问」页，二维码不会渲染），服务器上要 `xvfb-run -a node src/cli.mjs login --browser`。
 
-   注意：登录命令**必须**在有头模式下运行（闲鱼对无头请求直接返回「非法访问」页，二维码不会渲染），服务器上请用 `xvfb-run -a node src/cli.mjs login`。
-
-2. **本机登录后拷贝 profile**：在有桌面的机器上 `npm run login`，然后停止所有进程，把整个 `data/browser-profile` 目录拷到服务器的同路径下（要求同为 x64/arm64 且 Chromium 版本接近）。这条最稳，适合二维码刷新太麻烦的场景。
-
-3. **服务器上有桌面或 VNC**：直接在 VNC 里看浏览器窗口扫码。
+3. **在别的机器上登录后拷 `data/cookies.json`**：几 KB 的 JSON，跨平台直接可用。
 
 登录态通常能维持数周；失效后搜索接口会返回 `RGV587_ERROR`，日志与推送里会直接提示重新登录。
 
@@ -579,7 +581,7 @@ https://www.goofish.com/im?itemId=<id>&peerUserId=<uid>   # 直达聊天
 ```bash
 node src/cli.mjs web          # 图形控制台（等价于 npm run web）
 node src/cli.mjs run          # 纯命令行启动监控（默认命令）
-node src/cli.mjs login        # 扫码登录；成功后自动把登录态写入 data/cookies.json
+node src/cli.mjs login        # 扫码登录：二维码打在终端里（纯 HTTP，不启浏览器）；--browser 走浏览器路径
 node src/cli.mjs export-cookies  # 把 profile 里已有的登录态导出到 cookie 文件（不导航、不请求、不用重新扫码）
 node src/cli.mjs check        # 静态校验配置与运行环境
 node src/cli.mjs once         # 跑一轮只打印，不推送；--notify 才推送
@@ -627,6 +629,7 @@ node src/cli.mjs test-notify  # 测试所有通知渠道
 - **本工具做了什么、没做什么**（如实说明，别只看标签）：
   - **没有**实现验证码绕过，**没有**伪造浏览器指纹，也**没有**逆向 App 端签名（`x-sign` / `x-mini-wua` 那一族依赖真机 native 库，本项目不碰）。
   - **复刻了网页端公开的 H5 mtop 签名**（`md5(token&t&appKey&data)`）。这本身也是一条取舍：它把每轮请求数从 5 降到 1，但确实越过了本项目早期「不复刻任何签名」的自我约束。
+  - **登录走网页端 passport 的二维码流程**（`/newlogin/qrcode/*` + `/login_token/login.do`）。它同样没有公开文档，和上面那条 H5 签名属于同一层性质。实现是照协议事实**独立重写**的——现成的三个纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件，一行代码都没抄。不想用这条路就加 `--browser`。
   - 默认**不携带**平台下发的风控状态 cookie（`search.riskCookies: "omit"`）。实测它只是把平台施加的处罚带过来、并不承担功能，不带它请求照常成功；但这等于让客户端绕开平台施加的这道处罚。默认值如此，是否接受由使用者自行判断。
 - **资金安全**：本工具完全不接触支付环节，不代下单、不代支付。
 
@@ -665,6 +668,7 @@ src/
   search.mjs     browser 模式的搜索收集（**已弃用**，保留仅为回退）
   mtop.mjs       直连搜索（默认）：构造请求体、H5 签名、每轮 1 次请求、全局请求闸
   cookies.mjs    文件版 cookie 仓库：登录态的唯一来源，mtop 响应里的 Set-Cookie 会回写到这里
+  qrlogin.mjs    纯 HTTP 扫码登录：passport 流程 + 终端二维码渲染，不启浏览器
   parse.mjs      闲鱼响应字段适配层（接口变化只改这里）
   rules.mjs      命中判定（纯函数）
   store.mjs      已推送去重表

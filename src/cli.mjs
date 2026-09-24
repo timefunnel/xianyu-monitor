@@ -3,10 +3,11 @@
  * 命令行入口。子命令：
  *   web           启动图形控制台（HTTP + 浏览器界面），并自动拉起监控
  *   run           启动监控（默认）
- *   login         人工扫码登录：默认把手写二维码截图写到文件，--headed 则开窗口
+ *   login         扫码登录：默认纯 HTTP（二维码打在终端里，不需要浏览器）；--browser 走浏览器路径
  *   check         校验配置与运行环境，不启动浏览器
  *   once          跑一轮搜索并打印结果，不推送（加 --notify 才推送）
  *   dump          保存一轮原始响应，用于字段结构变化后的适配层排查
+ *   export-cookies 把 profile 里现有的登录态落到 cookie 文件
  *   test-notify   给所有通知渠道发一条测试消息
  */
 
@@ -16,6 +17,7 @@ import { loadConfig, withDefaults } from './config.mjs';
 import { createLogger } from './logger.mjs';
 import { createSearcher } from './mtop.mjs';
 import { FileCookieStore, defaultCookieFile } from './cookies.mjs';
+import { qrLogin } from './qrlogin.mjs';
 import { describeFilters, evaluate } from './rules.mjs';
 import { SeenStore } from './store.mjs';
 import { formatItem, sendAll } from './notify.mjs';
@@ -135,16 +137,68 @@ async function exportCookieFile(config, browser, logger, tag = 'login') {
   return count;
 }
 
+/**
+ * 纯 HTTP 扫码登录：把二维码直接打在终端里，手机扫屏幕即可。
+ *
+ * 不需要浏览器、不需要图形界面，所以服务器上（甚至容器里）可以直接登录——这本该是最省事的一条路，
+ * 也让登录不再受"闲鱼登录页改版"影响（浏览器版依赖 DOM 与 iframe，改一次版就失效）。
+ * HTTP 路径出问题时就加 `--browser` 回到浏览器路径。
+ *
+ * 这里**不做"会话还有效就跳过"的预检查**：那要多发一次 mtop 请求，而 `login` 本来就是用户主动执行的。
+ *
+ * @param {any} config 配置。
+ * @param {any} logger 日志器。
+ * @param {any} options 命令选项（`--timeout` 秒）。
+ * @returns {Promise<void>} 完成后 resolve。
+ */
+async function loginByQr(config, logger, options) {
+  const file = config.search?.cookieFile ?? defaultCookieFile(config);
+  const timeoutSeconds = Number(options.timeout ?? 180);
+  logger.info(`扫码登录（纯 HTTP，不启动浏览器），登录态将写入 ${file}`, 'login');
+
+  let lastStatus = null;
+  const result = await qrLogin({
+    store: new FileCookieStore({ file, logger }),
+    logger,
+    timeoutSeconds,
+    onQr: ({ terminal }) => {
+      // 二维码打在终端里：手机扫屏幕，不需要图片文件，也不需要图形界面。
+      process.stdout.write(`\n${terminal}\n请用闲鱼 App 扫描上面的二维码。\n\n`);
+    },
+    onWait: ({ status, remainingSeconds }) => {
+      if (status === lastStatus) return;
+      lastStatus = status;
+      logger.info(`等待扫码（状态 ${status || '未知'}）…剩余 ${remainingSeconds} 秒`, 'login');
+    },
+  });
+
+  if (!result.ok) {
+    logger.error(
+      `登录态缺少 ${result.missing.join('、')}，不算登录成功。可以重试，或加 --browser 走浏览器路径（需要图形界面）。`,
+      'login',
+    );
+    process.exitCode = 1;
+    return;
+  }
+  logger.info(`登录成功，已写入 ${result.cookies} 个 cookie。监控侧不再需要浏览器。`, 'login');
+}
+
 const commands = {
   /**
-   * 人工扫码登录，登录态由持久化 profile 保存。
+   * 扫码登录。默认走**纯 HTTP**（见 loginByQr），`--browser` 走下面这条浏览器路径。
    *
-   * 登录必须用有头浏览器：闲鱼对无头请求直接返回「非法访问」页，二维码根本不会渲染。
+   * 浏览器路径必须用有头模式：闲鱼对无头请求直接返回「非法访问」页，二维码根本不会渲染。
    * 服务器上也没有显示器，因此本命令一边保持有头渲染，一边把二维码截图写到共享目录，
    * 用户从 NAS/SFTP 打开图片用闲鱼 App 扫码；本机则会直接弹出窗口，扫窗口里的码同样可以。
    * 服务器上请用 xvfb-run 启动本命令。
    */
   async login({ config }, logger, options) {
+    // 默认走纯 HTTP：不需要浏览器、不需要图形界面，服务器上直接可用。
+    // 想用浏览器（想看窗口里的码，或 HTTP 路径出问题时）加 --browser。
+    if (options.browser !== true) {
+      await loginByQr(config, logger, options);
+      return;
+    }
     const out = path.resolve(options.out ?? path.join(path.dirname(config.storage.stateFile), 'login-qr.png'));
     const timeoutMs = Number(options.timeout ?? 300) * 1000;
     const browser = await createBrowser(config, logger, { headless: false });
@@ -256,7 +310,7 @@ const commands = {
     }
     logger.info(
       httpMode
-        ? `Playwright：${playwright} —— http 模式下监控用不到它，只有 login / export-cookies / 点开看商品需要`
+        ? `Playwright：${playwright} —— 默认登录（纯 HTTP 终端二维码）与监控都用不到它，只有 --browser 登录 / export-cookies / 点开看商品需要`
         : `Playwright：${playwright}`,
     );
 
@@ -453,7 +507,8 @@ configPath = options.config ?? process.env.XIANYU_CONFIG ?? configPath;
 if (command === 'help' || options.help) {
   process.stdout.write(
     '用法：node src/cli.mjs <web|run|login|export-cookies|check|once|dump|test-notify> [--config 路径] [--task 名称]\n' +
-      '  web 支持 --port --host --token --no-open\n',
+      '  web 支持 --port --host --token --no-open\n' +
+      '  login 默认纯 HTTP：二维码打在终端里，不需要浏览器/图形界面；--browser 走浏览器路径，--timeout 秒\n',
   );
   process.exit(0);
 }

@@ -54,7 +54,7 @@ const RISK_STATE_COOKIES = ['sgcookie'];
 export const REGION_PRESETS = new Set(['江浙沪', '珠三角', '京津冀', '东三省', '全国']);
 
 /** 浏览器 UA。搜索走的是网页版的接口，带上与页面一致的 UA。 */
-const USER_AGENT =
+export const USER_AGENT =
   'Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 (KHTML, like Gecko) Chrome/140.0.0.0 Safari/537.36';
 
 /**

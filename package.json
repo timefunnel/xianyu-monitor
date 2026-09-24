@@ -20,6 +20,10 @@
     "test": "node --test \"test/**/*.test.mjs\""
   },
   "dependencies": {
-    "playwright": "^1.63.0"
+    "playwright": "^1.63.0",
+    "qrcode-generator": "^2.0.4"
+  },
+  "devDependencies": {
+    "jsqr": "^1.4.0"
   }
 }
