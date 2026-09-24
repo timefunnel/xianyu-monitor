@@ -237,7 +237,13 @@ export class Supervisor {
       seenCount: this.#ensureStore().size,
       lastError: this.lastError,
       hits: [...this.hits].reverse(),
-      login: { ...this.login },
+      login: {
+        active: this.login.active,
+        qrUrl: this.login.qrUrl,
+        // 只给标记，不把 SVG 本体塞进每次轮询（那是几 KB，5 秒一次纯属浪费）。
+        qrReady: Boolean(this.login.qrSvg),
+        status: this.login.status,
+      },
       // 渠道字段定义一并下发：界面上那张表单就是照它渲染的，服务端与前端不会各写一份而分叉。
       channelTypes: CHANNEL_SCHEMA,
       // 推送总开关；实际是否推送还要看每个任务自己的 notify（两者是「与」）。

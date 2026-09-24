@@ -39,9 +39,16 @@ writeFileSync(
 );
 
 const calls = [];
+/** 登录弹层要读的状态；测试中途会改它来模拟"二维码生成好了"。 */
+const loginState = { active: false, qrUrl: '/api/login-qr.svg', qrSvg: null, status: null };
+/** 真实 supervisor 把 login 暴露成属性（服务端 /api/login-qr.svg 直接从它取二维码），桩也照做。 */
+const currentLogin = () => ({ ...loginState, qrReady: Boolean(loginState.qrSvg) });
 const supervisor = {
   configPath,
   subscribe: () => () => {},
+  get login() {
+    return currentLogin();
+  },
   snapshot: () => ({
     running: true,
     starting: false,
@@ -50,7 +57,8 @@ const supervisor = {
     seenCount: 0,
     lastError: null,
     hits: [{ id: '1', task: 't', title: 'AOC 27寸 2K 180Hz', price: 568, area: '上海', seller: 'b', url: 'https://www.goofish.com/item?id=1', appUrl: null, pushedAt: Date.now(), pushed: true }],
-    login: { active: false },
+    // 二维码本体不进快照，只给标记（真实 supervisor 也是这么做的）。
+    login: currentLogin(),
     notifyEnabled: true,
     channelTypes: CHANNEL_SCHEMA,
     tasks: [],
@@ -62,7 +70,15 @@ const supervisor = {
     calls.push(['repushHit', id]);
     return { ok: true, results: [{ type: 'bark', ok: true }] };
   },
-  loginWithQr: async () => ({ ok: true }),
+  loginWithQr: async () => {
+    loginState.active = true;
+    return { ok: true, active: true };
+  },
+  cancelLogin: async () => {
+    calls.push(['cancelLogin']);
+    loginState.active = false;
+    return { ok: true, cancelled: true };
+  },
   setNotify: async () => ({ ok: true }),
   setTaskEnabled: async () => ({ ok: true }),
   saveTasks: async () => ({ ok: true }),
@@ -173,6 +189,32 @@ try {
     blocked.slice(-1)[0]?.slice(0, 60) ?? '(没有外部请求)',
   );
   await page.screenshot({ path: 'data/console-hits-repush.png' }).catch(() => {});
+
+  // ---- 登录弹层：二维码没生成好之前不能显示「图裂」----
+  await page.click('#loginBtn');
+  await page.waitForTimeout(500);
+  check(await page.locator('#loginMask').isVisible(), '点「重新登录」会打开扫码弹层');
+  const srcWhilePending = await page.locator('#qrImg').getAttribute('src');
+  check(srcWhilePending === null, '二维码没生成时不给 <img> 设 src（设了就是图裂）', String(srcWhilePending));
+  check(await page.locator('#qrPlaceholder').isVisible(), '此时显示占位提示而不是图裂');
+  check(/生成|启动/.test(await page.locator('#qrPlaceholder').innerText()), '占位文案要说清在等什么');
+
+  // 服务端生成好之后（状态里 qrReady 变真），应显示真实二维码。
+  // 主动拉一次状态并刷新二维码，不等定时器——否则这条断言会跟轮询节奏赛跑。
+  loginState.qrSvg = '<svg xmlns="http://www.w3.org/2000/svg" width="8" height="8"><rect width="8" height="8" fill="#000"/></svg>';
+  await page.evaluate(async () => {
+    await refreshState();
+    refreshQr();
+  });
+  await page.waitForTimeout(300);
+  check((await page.locator('#qrImg').getAttribute('src')) !== null, '生成好之后设上了 src');
+  check(await page.locator('#qrImg').isVisible(), '二维码显示出来了');
+  check(!(await page.locator('#qrPlaceholder').isVisible()), '占位提示要收起来');
+
+  // 关掉弹层就是取消：要告诉服务端别继续轮询
+  await page.click('#loginClose');
+  await page.waitForTimeout(300);
+  check(calls.some((entry) => entry[0] === 'cancelLogin'), '关弹层会通知服务端取消登录');
   // ---- 老进程场景：前端新、服务端旧（/api/state 里没有 channelTypes）----
   const stale = { ...supervisor, snapshot: () => ({ ...supervisor.snapshot(), channelTypes: undefined }) };
   const staleConsole = await startWebConsole({ supervisor: stale, port: 0, host: '127.0.0.1', token: '', logger: { info() {}, warn() {}, error() {} }, openBrowser: false });

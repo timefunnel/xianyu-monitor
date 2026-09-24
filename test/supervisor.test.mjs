@@ -633,7 +633,7 @@ test('「重新登录」起一个纯 HTTP 的二维码会话，成功后把登�
   assert.equal(existsSync(cookieFile), true, 'cookie 文件必须真的被创建');
   assert.equal(supervisor.session, 'valid');
   assert.equal(supervisor.snapshot().login.active, false, '流程结束后 active 要归位');
-  assert.equal(supervisor.snapshot().login.qrSvg, null, '二维码用完就清掉，别一直挂在状态里');
+  assert.equal(supervisor.snapshot().login.qrReady, false, '二维码用完就该标记为不可用，别一直挂在状态里');
 });
 
 test('登录失败时不覆盖原有的 cookie 文件，并给出可读的原因', async () => {
@@ -738,7 +738,7 @@ test('取消登录：中止轮询、清掉状态、不记错误，监控照常�
     await supervisor.loginPromise;
 
     assert.equal(supervisor.snapshot().login.active, false, '取消后 active 要归位');
-    assert.equal(supervisor.snapshot().login.qrSvg, null, '二维码要清掉，别继续挂在状态里');
+    assert.equal(supervisor.snapshot().login.qrReady, false, '二维码要标记为不可用，别继续挂在状态里');
     assert.equal(supervisor.snapshot().running, true, '取消后监控必须还在跑');
     assert.equal(supervisor.snapshot().lastError, null, '取消是用户主动行为，不该记成错误');
     assert.equal(supervisor.cancelLogin().cancelled, false, '没有流程在跑时取消是空操作');

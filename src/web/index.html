@@ -679,6 +679,8 @@
     justify-content: center;
   }
   .qr-box img { width: 100%; height: 100%; display: block; object-fit: contain; }
+  /* 二维码还没生成好时显示它——给 <img> 空着 src 会变成「图裂」，比没图还难看。 */
+  .qr-placeholder { padding: 0 18px; font-size: 13px; color: var(--muted); text-align: center; line-height: 1.7; }
   .qr-hint { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
   .modal-actions { margin-top: 14px; display: flex; justify-content: center; }
 
@@ -1120,7 +1122,10 @@
 <div class="mask" id="loginMask" hidden>
   <div class="modal">
     <h3>扫码登录闲鱼</h3>
-    <div class="qr-box"><img id="qrImg" alt="闲鱼登录二维码"></div>
+    <div class="qr-box">
+      <img id="qrImg" alt="闲鱼登录二维码" hidden>
+      <span class="qr-placeholder" id="qrPlaceholder">正在生成二维码…</span>
+    </div>
     <div class="qr-hint">
      二维码由服务端生成（纯 HTTP，不需要浏览器），请用闲鱼 App 扫码<br>
       <span id="qrNote">扫码后在手机上点击「确认登录」</span><br>
@@ -2504,11 +2509,37 @@ let loginSawActive = false;
 let qrTimer = null;
 const QR_REFRESH_MS = 4000;
 
-/** 刷新二维码：加时间戳绕过缓存。二维码由服务端登录会话生成，一次有效；轮询是为了拿到重新开始的会话。 */
+/**
+ * 刷新二维码。
+ *
+ * **只有服务端真的生成好了才给 `<img>` 设 src**：刚点「重新登录」的那一两秒里二维码还没出来，
+ * 这时设 src 会拿到 404，浏览器就显示成「图裂」——比显示一句"正在生成"难看得多。
+ * 服务端把二维码本体放在 /api/login-qr.svg 里，状态里只给一个 qrReady 标记（省掉每次轮询都传几 KB 的 SVG）。
+ */
 function refreshQr() {
-  const qrUrl = (lastState && lastState.login && lastState.login.qrUrl) || '/api/login-qr.svg';
+  const login = (lastState && lastState.login) || {};
   const img = $('qrImg');
-  img.src = qrUrl + '?t=' + Date.now();
+  const placeholder = $('qrPlaceholder');
+  if (!login.active || !login.qrReady) {
+    img.removeAttribute('src');
+    img.hidden = true;
+    placeholder.hidden = false;
+    placeholder.textContent = login.active ? '正在生成二维码…' : '正在启动登录流程…';
+    return;
+  }
+  img.hidden = false;
+  placeholder.hidden = true;
+  img.src = `${login.qrUrl || '/api/login-qr.svg'}?t=${Date.now()}`;
+}
+
+/** 图片加载失败（会话刚重启、二维码取不到）时退回占位提示，别再显示图裂。 */
+function onQrLoadError() {
+  const img = $('qrImg');
+  img.removeAttribute('src');
+  img.hidden = true;
+  const placeholder = $('qrPlaceholder');
+  placeholder.hidden = false;
+  placeholder.textContent = '二维码暂时取不到，正在重试…';
 }
 
 /** 登录流程状态：只反映服务端的 login.active，不动二维码自己的提示文案。 */
@@ -3720,6 +3751,8 @@ function bindEvents() {
   });
   const qrImg = $('qrImg');
   qrImg.addEventListener('error', () => {
+    // 图裂时退回占位提示（服务端还没生成 / 会话刚重启）。
+    onQrLoadError();
     $('qrNote').textContent = '二维码图片暂时取不到，正在重试…';
   });
   qrImg.addEventListener('load', () => {
