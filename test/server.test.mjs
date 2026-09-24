@@ -271,21 +271,93 @@ test('登录流程给出二维码后，接口以 SVG 返回（不再需要浏览
   }
 });
 
-test('对外监听时必须带令牌，带对之后种 Cookie', async () => {
-  const console_ = await withConsole(fakeSupervisor(), { token: 'secret' });
+test('设了密码后：接口 401、页面跳登录页，登录成功后凭会话 Cookie 通行', async () => {
+  const console_ = await withConsole(fakeSupervisor(), { password: 'correct-horse-battery' });
   try {
-    assert.equal((await fetch(`${console_.base}/api/state`)).status, 401);
+    // 未登录：接口给 401（前端能显示可读提示），页面给 302 到登录页
+    const api = await fetch(`${console_.base}/api/state`);
+    assert.equal(api.status, 401);
 
-    const authorized = await fetch(`${console_.base}/api/state?token=secret`);
-    assert.equal(authorized.status, 200);
-    assert.match(authorized.headers.get('set-cookie') ?? '', /xy_token=secret/);
+    const page = await fetch(`${console_.base}/`, { redirect: 'manual' });
+    assert.equal(page.status, 302);
+    assert.equal(page.headers.get('location'), '/login');
 
-    // 之后只带 Cookie 也能通过。
-    const viaCookie = await fetch(`${console_.base}/api/state`, { headers: { cookie: 'xy_token=secret' } });
-    assert.equal(viaCookie.status, 200);
+    // 登录页本身要能打开
+    const loginPage = await fetch(`${console_.base}/login`);
+    assert.equal(loginPage.status, 200);
+    assert.match(await loginPage.text(), /访问密码/);
+
+    // 密码错了：401，且不种会话
+    const wrong = await fetch(`${console_.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=nope',
+      redirect: 'manual',
+    });
+    assert.equal(wrong.status, 401);
+    assert.equal(wrong.headers.get('set-cookie'), null);
+
+    // 密码对了：种一个 HttpOnly 会话 Cookie 并跳回首页
+    const ok = await fetch(`${console_.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=correct-horse-battery',
+      redirect: 'manual',
+    });
+    assert.equal(ok.status, 302);
+    assert.equal(ok.headers.get('location'), '/');
+    const cookie = ok.headers.get('set-cookie') ?? '';
+    assert.match(cookie, /xy_session=[0-9a-f]{64}/, 'Cookie 里必须是随机会话 id，而不是密码本身');
+    assert.match(cookie, /HttpOnly/);
+    assert.match(cookie, /SameSite=Lax/);
+    assert.ok(!cookie.includes('correct-horse-battery'), 'Cookie 里绝不能出现密码');
+
+    // 带会话就能用
+    const session = cookie.split(';')[0];
+    const authed = await fetch(`${console_.base}/api/state`, { headers: { cookie: session } });
+    assert.equal(authed.status, 200);
+
+    // 退出登录后失效
+    await fetch(`${console_.base}/logout`, { method: 'POST', headers: { cookie: session }, redirect: 'manual' });
+    assert.equal((await fetch(`${console_.base}/api/state`, { headers: { cookie: session } })).status, 401);
   } finally {
     await console_.close();
   }
+});
+
+test('密码错误次数过多会被锁定（429 + Retry-After）', async () => {
+  const console_ = await withConsole(fakeSupervisor(), { password: 'correct-horse-battery' });
+  try {
+    let last = null;
+    for (let attempt = 0; attempt < 6; attempt += 1) {
+      last = await fetch(`${console_.base}/login`, {
+        method: 'POST',
+        headers: { 'content-type': 'application/x-www-form-urlencoded' },
+        body: 'password=wrong',
+        redirect: 'manual',
+      });
+    }
+    assert.equal(last.status, 429, '连续失败后应该被锁定');
+    assert.ok(Number(last.headers.get('retry-after')) > 0, '要告诉客户端多久后再试');
+
+    // 锁定期内即使密码正确也不放行——否则锁定形同虚设
+    const correctWhileLocked = await fetch(`${console_.base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=correct-horse-battery',
+      redirect: 'manual',
+    });
+    assert.equal(correctWhileLocked.status, 429);
+  } finally {
+    await console_.close();
+  }
+});
+
+test('非本机监听且没设密码时拒绝启动', async () => {
+  await assert.rejects(
+    () => startWebConsole({ supervisor: fakeSupervisor(), port: 0, host: '0.0.0.0', logger: null }),
+    /必须设置 web.password/,
+  );
 });
 
 test('SSE 连上时会补发最近的日志（否则刷新后日志面板一直是空的）', async () => {

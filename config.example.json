@@ -19,7 +19,8 @@
   "web": {
     "port": 7788,
     "host": "127.0.0.1",
-    "token": "",
+    "password": "${WEB_PASSWORD}",
+    "trustProxy": false,
     "open": true
   },
   "notify": {

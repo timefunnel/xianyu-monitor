@@ -106,13 +106,36 @@ npm run web -- --port 9000 --no-open
 
 ### 远程访问
 
-默认只监听 `127.0.0.1`，只有本机能访问。要让 NAS / 手机访问，必须同时设置令牌：
+默认只监听 `127.0.0.1`，只有本机能访问。要让 NAS / 手机 / 公网访问，**必须设置访问密码**：
 
-```json
-"web": { "port": 7788, "host": "0.0.0.0", "token": "自己编一串随机字符", "open": false }
+```jsonc
+"web": {
+  "port": 7788,
+  "host": "0.0.0.0",
+  "password": "${WEB_PASSWORD}",  // 从 .env 读；至少 12 位随机串
+  "trustProxy": true,             // 放在反向代理后面时打开
+  "open": false
+}
 ```
 
-启动日志会打印带令牌的完整地址，打开一次就会记住（种 Cookie）。**没设令牌时程序会拒绝监听 `0.0.0.0`**——这个控制台能启停抓取、改配置、看推送历史，等同于账号的操作面板，不能裸奔在局域网上。
+打开地址会先跳到一个登录页，输对密码后拿到会话 Cookie。**没设密码时程序会拒绝监听 `0.0.0.0`**——这个控制台能启停抓取、改配置、看推送历史，等同于账号的操作面板，不能裸奔在公网上。
+
+鉴权的几条实现取舍（都在 `src/auth.mjs`，有单测钉着）：
+
+| 做法 | 为什么 |
+| --- | --- |
+| 会话是**随机 id**，不是密码本身 | 旧实现把令牌原样写进 Cookie，等于每台设备都存一份明文口令 |
+| 比较走 `timingSafeEqual` | `===` 会在第一个不同字符处提前返回，理论上可逐字节试探 |
+| 密码**只从 POST body** 取 | 查询串会进访问日志、Referer 和浏览器历史 |
+| 失败按 **IP 限流**：5 次后锁定，逐步加长，上限 1 小时 | 公网暴露没有限流，爆破只是时间问题 |
+| Cookie 带 `HttpOnly; SameSite=Lax`，https 时再加 `Secure` | 防脚本读取与跨站携带 |
+| 会话只在内存里 | 进程重启即全部失效，不必再落盘一份凭据 |
+
+> `trustProxy` 决定要不要相信 `X-Forwarded-For` / `X-Forwarded-Proto`。**默认关闭**是有意的：
+> 直接暴露时这两个头可以被伪造，打开就等于让攻击者随便换 IP 绕过限流、甚至伪造 https。
+> 放在反向代理后面（且代理会覆写这两个头）时才打开。
+
+`--token` 命令行参数与配置里的 `web.token` 仍然可用，但只当作密码的旧别名。
 
 Docker 部署时把端口发布出来即可：
 
@@ -184,7 +207,7 @@ scp data/cookies.json 用户@服务器:/opt/xianyu-monitor/data/
 - **监控常驻的资源占用很小**：没有 Chrome、没有 Xvfb，只有一个 Node 进程，外加每轮 1 次 HTTPS 请求。
 - **服务器上把 `web.open` 设成 `false`**，否则每次启动都会去调系统浏览器打开页面（没有 `xdg-open` 也不会崩，但那是个没必要的动作）。
 - **时区**：通知里的相对时间（"3 分钟前"）与时区无关，只有少数带绝对时间的文案受影响。宿主机是 UTC 时建议设 `TZ=Asia/Shanghai`（systemd 单元与 compose 里都给上了）。
-- **远端访问控制台**必须同时设 `web.host` 与 `web.token`，否则程序拒绝监听（见「远程访问」）。
+- **远端访问控制台**必须同时设 `web.host` 与 `web.password`，否则程序拒绝监听（见「远程访问」）。
 - **「点开看商品」始终在你自己的浏览器里打开**——服务端不参与，也就不会有"点了没反应"。
 - **登录态过期后要重新扫码**，这一步绕不开（平台要求），但**在服务器终端里就能完成**。
 
@@ -289,8 +312,9 @@ node src/cli.mjs login
   },
   "web": {
     "port": 7788,                    // 控制台端口
-    "host": "127.0.0.1",             // 改成 0.0.0.0 时必须同时设 token
-    "token": "",
+    "host": "127.0.0.1",             // 改成 0.0.0.0 时必须同时设 password
+    "password": "${WEB_PASSWORD}",   // 访问密码，从 .env 读；公网至少 12 位随机串
+    "trustProxy": false,             // 放在反向代理后面时改成 true
     "open": true                     // 启动后自动打开浏览器
   },
   "tasks": [
@@ -551,7 +575,7 @@ node src/cli.mjs dump         # 保存原始响应，用于接口字段变化时
 node src/cli.mjs test-notify  # 测试所有通知渠道
 ```
 
-通用参数：`--config 路径`、`--task 名称`。`web` 额外支持 `--port`、`--host`、`--token`、`--no-open`。也可用环境变量 `XIANYU_CONFIG` 指定配置。
+通用参数：`--config 路径`、`--task 名称`。`web` 额外支持 `--port`、`--host`、`--no-open`。也可用环境变量 `XIANYU_CONFIG` 指定配置。
 
 ## 调参建议
 
@@ -635,10 +659,12 @@ src/
   notify.mjs     通知渠道与文案
   monitor.mjs    主循环：调度、退避、心跳、告警
   supervisor.mjs 运行时管理：生命周期、状态快照、命中历史、扫码登录
-  server.mjs     控制台 HTTP 服务：JSON 接口、SSE 实时日志、令牌校验
+  auth.mjs       登录密码闸：随机会话、按 IP 失败限流、恒定时间比较
+  server.mjs     控制台 HTTP 服务：JSON 接口、SSE 实时日志、登录校验
   web/index.html 控制台前端（单文件，零依赖）
+  web/login.html 登录页（单文件，服务端注入错误信息）
 test/            node --test 单测与集成测试（用假 Page / 假 fetch / 假 supervisor）
-deploy/          systemd 单元示例
+deploy/          systemd 单元示例、公网部署 compose 与说明（deploy/README-部署.md）
 docs/           调研记录：闲鱼开源生态、mtop 签名方案、反检测与真机路线（含证据分级与出处）
 start.cmd        Windows 双击启动控制台
 start.sh         Linux / NAS 启动控制台（首次自动装依赖）

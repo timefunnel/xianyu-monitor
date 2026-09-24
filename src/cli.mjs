@@ -232,14 +232,16 @@ const commands = {
 
     const port = Number(options.port ?? config.web.port);
     const host = String(options.host ?? config.web.host);
-    const token = String(options.token ?? config.web.token);
+    // password 是正式字段；token 是旧字段，仍然当密码用（老配置不至于连不上）。
+    const password = String(config.web.password || config.web.token || '');
+    const trustProxy = config.web.trustProxy === true;
     const open = options['no-open'] !== true && config.web.open !== false;
 
-    const console_ = await startWebConsole({ supervisor, port, host, token, logger, openBrowser: open });
+    const console_ = await startWebConsole({ supervisor, port, host, password, trustProxy, logger, openBrowser: open });
 
     const started = await supervisor.start();
     if (!started.ok) logger.warn(`监控未自动启动：${started.error}`, 'web');
-    if (token) logger.info(`已启用访问令牌，打开 ${console_.url} 即可（也可只用 ?token=${token}）`, 'web');
+    if (password) logger.info('已启用访问密码，打开地址后会先跳转登录页', 'web');
 
     let closing = false;
     const shutdown = async (signal) => {

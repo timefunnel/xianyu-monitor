@@ -2,19 +2,23 @@
  * Web 控制台：用 Node 内置 http 提供状态查询、启停控制、实时日志（SSE）和配置编辑。
  *
  * 不引入任何依赖：静态页面是单个 HTML 文件，数据接口就是几段 JSON。默认只监听
- * 127.0.0.1；要放到 NAS 上给其它设备访问时，务必同时设置 `web.token`——
+ * 127.0.0.1；要放到公网（或 NAS 上给其它设备访问）**必须设置 `web.password`**——
  * 这个控制台能启停抓取、改配置、看推送历史，等同于账号的操作面板。
+ *
+ * 鉴权见 auth.mjs：独立登录页 + 随机会话 Cookie + 按 IP 的失败限流。密码只在 POST body 里传，
+ * 不接受查询串（那会进访问日志与 Referer）。
  */
 
 import { createServer } from 'node:http';
 import { spawn } from 'node:child_process';
-import { existsSync } from 'node:fs';
 import { readFile } from 'node:fs/promises';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { AuthGate, clientIp, isSecureRequest } from './auth.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const INDEX_PATH = path.join(here, 'web', 'index.html');
+const LOGIN_PATH = path.join(here, 'web', 'login.html');
 
 /** 请求体上限：配置 JSON 也就几十 KB。 */
 const MAX_BODY_BYTES = 1024 * 1024;
@@ -54,6 +58,19 @@ function openBrowser(url) {
   }
 }
 
+/** 读取并解析表单请求体（登录页用 `application/x-www-form-urlencoded`）。 */
+async function readFormBody(request) {
+  const chunks = [];
+  let size = 0;
+  for await (const chunk of request) {
+    size += chunk.length;
+    if (size > MAX_BODY_BYTES) throw new Error('请求体过大');
+    chunks.push(chunk);
+  }
+  if (chunks.length === 0) return new URLSearchParams();
+  return new URLSearchParams(Buffer.concat(chunks).toString('utf8'));
+}
+
 /** 读取并解析 JSON 请求体。 */
 async function readJsonBody(request) {
   const chunks = [];
@@ -74,27 +91,34 @@ function sendJson(response, status, payload) {
   response.end(body);
 }
 
-/** 从查询串或 Cookie 里取出访问令牌。 */
-function readToken(request, url) {
-  const fromQuery = url.searchParams.get('token');
-  if (fromQuery) return fromQuery;
-  const cookie = request.headers.cookie ?? '';
-  const match = /(?:^|;\s*)xy_token=([^;]+)/.exec(cookie);
-  return match ? decodeURIComponent(match[1]) : '';
-}
-
 /**
  * 启动 Web 控制台。
  * @param {object} options
  * @param {import('./supervisor.mjs').Supervisor} options.supervisor 运行时。
  * @param {number} [options.port] 监听端口，0 表示由系统分配。
  * @param {string} [options.host] 监听地址。
- * @param {string} [options.token] 访问令牌；设置后所有请求都要带 `?token=`。
+ * @param {string} [options.password] 访问密码；**非本机监听时必须设置**。
+ * @param {boolean} [options.trustProxy] 是否信任 `X-Forwarded-For` / `X-Forwarded-Proto`
+ *   （放在反向代理后面时要开，否则限流会把所有访客算成同一个 IP）。
  * @param {any} options.logger 日志器。
  * @param {boolean} [options.openBrowser] 监听成功后是否自动打开浏览器。
  * @returns {Promise<{url: string, port: number, close: () => Promise<void>}>} 服务句柄。
  */
-export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0.1', token = '', logger, openBrowser: shouldOpen = false }) {
+export async function startWebConsole({
+  supervisor,
+  port = 7788,
+  host = '127.0.0.1',
+  password = '',
+  trustProxy = false,
+  logger,
+  openBrowser: shouldOpen = false,
+}) {
+  const gate = new AuthGate({ password, logger });
+  const loopback = ['127.0.0.1', 'localhost', '::1'].includes(host);
+  // 配置校验里已经拦了一道，这里再拦一次：直接调这个函数的人也该被拦住。
+  if (!loopback && !gate.enabled) {
+    throw new Error('监听非本机地址时必须设置 web.password，否则同网段（或公网）任何人都能启停抓取、改配置。');
+  }
   /** @type {Set<import('node:http').ServerResponse>} */
   const streams = new Set();
 
@@ -171,14 +195,70 @@ export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0
     'POST /api/login': () => supervisor.loginWithQr(),
   };
 
+  /** 渲染登录页。`error` 为空时不显示错误块。 */
+  const sendLoginPage = async (response, status = 200, error = '') => {
+    let html;
+    try {
+      html = await readFile(LOGIN_PATH, 'utf8');
+    } catch {
+      html = '<!doctype html><meta charset="utf-8"><title>登录</title><p>登录页缺失，请检查安装。</p>';
+    }
+    const block = error ? `<p class="error">${error}</p>` : '';
+    response.writeHead(status, { 'content-type': 'text/html; charset=utf-8', 'cache-control': 'no-store' });
+    response.end(html.replace('{{ERROR}}', block));
+  };
+
+  /** 处理登录提交。密码只从 body 取，不接受查询串。 */
+  const handleLogin = async (request, response) => {
+    let submitted = '';
+    try {
+      submitted = (await readFormBody(request)).get('password') ?? '';
+    } catch {
+      await sendLoginPage(response, 400, '请求格式不正确');
+      return;
+    }
+    const result = gate.login(request, submitted, { trustProxy });
+    if (!result.ok) {
+      if (result.retryAfterSeconds) response.setHeader('retry-after', String(result.retryAfterSeconds));
+      await sendLoginPage(response, result.retryAfterSeconds ? 429 : 401, result.error);
+      return;
+    }
+    const secure = isSecureRequest(request, { trustProxy });
+    response.writeHead(302, { location: '/', 'set-cookie': gate.cookieFor(result.sessionId, { secure }), 'cache-control': 'no-store' });
+    response.end();
+  };
+
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? '/', `http://${request.headers.host ?? 'localhost'}`);
 
-    if (url.pathname === '/api/events') {
-      if (token && readToken(request, url) !== token) {
-        sendJson(response, 401, { ok: false, error: '令牌不正确' });
+    // 登录页与登录提交必须在鉴权之前。
+    if (url.pathname === '/login') {
+      if (request.method === 'POST') {
+        await handleLogin(request, response);
         return;
       }
+      await sendLoginPage(response, 200);
+      return;
+    }
+    if (url.pathname === '/logout' && request.method === 'POST') {
+      gate.logout(gate.check(request).sessionId);
+      response.writeHead(302, { location: '/login', 'set-cookie': AuthGate.clearCookie(), 'cache-control': 'no-store' });
+      response.end();
+      return;
+    }
+
+    // 鉴权：没过就送去登录页（接口返回 401，让前端能给出可读提示而不是一坨 HTML）。
+    if (!gate.check(request).ok) {
+      if (url.pathname.startsWith('/api/')) {
+        sendJson(response, 401, { ok: false, error: '未登录或会话已过期，请重新登录' });
+      } else {
+        response.writeHead(302, { location: '/login', 'cache-control': 'no-store' });
+        response.end();
+      }
+      return;
+    }
+
+    if (url.pathname === '/api/events') {
       response.writeHead(200, {
         'content-type': 'text/event-stream; charset=utf-8',
         'cache-control': 'no-store',
@@ -208,22 +288,6 @@ export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0
         streams.delete(response);
       });
       return;
-    }
-
-    // 令牌校验：带对了 token 就种一个 Cookie，省得之后每个请求都拼参数。
-    if (token && readToken(request, url) !== token) {
-      if (url.pathname.startsWith('/api/')) {
-        sendJson(response, 401, { ok: false, error: '需要访问令牌：在地址后加上 ?token=你的令牌' });
-      } else {
-        response.writeHead(401, { 'content-type': 'text/html; charset=utf-8' });
-        response.end('<meta charset="utf-8"><p>需要访问令牌：请在地址后加上 <code>?token=你的令牌</code></p>');
-      }
-      return;
-    }
-    // 带对令牌就种一个 Cookie，省得之后每个请求都拼参数。
-    // 用 setHeader 而不是拼进 writeHead 的参数：这样它对下面所有分支（HTML / JSON / PNG）都生效。
-    if (token && url.searchParams.get('token') === token) {
-      response.setHeader('set-cookie', `xy_token=${encodeURIComponent(token)}; Path=/; SameSite=Lax; Max-Age=2592000`);
     }
 
     try {
@@ -268,10 +332,10 @@ export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0
   const actualPort = server.address().port;
   // 监听 0.0.0.0 时给出本机可用的地址，方便直接粘贴到浏览器。
   const displayHost = host === '0.0.0.0' || host === '::' ? '127.0.0.1' : host;
-  const tokenSuffix = token ? `?token=${encodeURIComponent(token)}` : '';
-  const url = `http://${displayHost}:${actualPort}/${tokenSuffix}`;
+  const url = `http://${displayHost}:${actualPort}/`;
 
   logger?.info(`Web 控制台已就绪：${url}`, 'web');
+  if (gate.enabled) logger?.info('已启用访问密码：首次打开会跳到登录页', 'web');
   if (shouldOpen) openBrowser(url);
 
   return {

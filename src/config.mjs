@@ -140,14 +140,23 @@ export function validateConfig(config) {
   if ('port' in web && (!Number.isInteger(web.port) || web.port < 1 || web.port > 65535)) {
     problems.push('web.port 必须是 1~65535 的整数');
   }
-  for (const key of ['host', 'token']) {
+  for (const key of ['host', 'password', 'token']) {
     if (key in web && typeof web[key] !== 'string') problems.push(`web.${key} 必须是字符串`);
   }
   if (typeof web.host === 'string' && !['127.0.0.1', 'localhost', '0.0.0.0', '::'].includes(web.host)) {
     problems.push('web.host 只支持 127.0.0.1 / localhost / 0.0.0.0 / ::');
   }
-  if (typeof web.host === 'string' && ['0.0.0.0', '::'].includes(web.host) && !web.token) {
-    problems.push('web.host 对外监听时必须设置 web.token，否则同网段任何人都能启停抓取、改配置');
+  // token 是旧字段，仍当密码用；两者都没设才拦。
+  const password = typeof web.password === 'string' && web.password !== '' ? web.password : web.token;
+  if (typeof web.host === 'string' && ['0.0.0.0', '::'].includes(web.host) && !password) {
+    problems.push('web.host 对外监听时必须设置 web.password（或旧的 web.token），否则同网段任何人都能启停抓取、改配置');
+  }
+  if (typeof password === 'string' && password !== '') {
+    if (password.length < 8) {
+      problems.push(`web.password 太短（${password.length} 位）：这个控制台能改配置、看历史，公网上至少用 12 位随机串`);
+    } else if (password.length < 12) {
+      problems.push(`提醒：web.password 只有 ${password.length} 位，公网暴露建议至少 12 位随机串`);
+    }
   }
 
   // 渠道结构交给 notify.mjs 的同一份 schema 校验：控制台的表单就是从它生成的，
@@ -239,6 +248,11 @@ export function withDefaults(config) {
     web: {
       port: 7788,
       host: '127.0.0.1',
+      // 访问密码。对外监听（0.0.0.0）时必填，见上面的校验。
+      password: '',
+      // 放在反向代理后面时置 true：限流要按真实来源 IP，Cookie 也要认 X-Forwarded-Proto。
+      trustProxy: false,
+      // 旧字段：仍当密码用，新配置请用 password。
       token: '',
       open: true,
       ...config.web,

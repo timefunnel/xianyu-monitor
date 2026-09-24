@@ -1,0 +1,38 @@
+# 公网部署用的 compose 模板：应用只绑 127.0.0.1，公网入口交给宿主机上已有的反向代理。
+#
+# 为什么不让这个 compose 自己带 Caddy/Nginx：目标服务器上 80/443 已经被 1Panel 的 OpenResty 占了，
+# 再起一个反代只会抢端口。正确做法是把这个容器挂在本机端口上，由既有反代转发过来。
+#
+# 用法（把下面的 <...> 换成实际值）：
+#   cp deploy/compose.server.yml /opt/xianyu-monitor/docker-compose.yml
+#   # 然后按 deploy/README-部署.md 准备 config.json 与 .env
+#   docker compose up -d --build
+#
+# 注意 config.json 里必须设：
+#   "web": { "host": "0.0.0.0", "password": "${WEB_PASSWORD}", "trustProxy": true, "open": false }
+#   - host 0.0.0.0 是因为容器内的进程要监听所有网卡，再由 Docker 映射到宿主机的 127.0.0.1
+#   - trustProxy true 才能按真实访客 IP 限流、并认 X-Forwarded-Proto 给 Cookie 加 Secure
+services:
+  xianyu-monitor:
+    build: .
+    container_name: xianyu-monitor
+    restart: unless-stopped
+    # 跑控制台（它会自动拉起监控）。只要监控、不要界面就换成 run。
+    # --no-open 是必须的：容器里没有桌面，别去调 xdg-open。
+    command: ["node", "src/cli.mjs", "web", "--no-open"]
+    env_file:
+      - .env
+    environment:
+      TZ: Asia/Shanghai
+      XIANYU_CONFIG: /app/config.json
+    volumes:
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+    # 只绑本机：公网入口交给宿主机上的 OpenResty（1Panel），容器不直接暴露。
+    ports:
+      - "127.0.0.1:7788:7788"
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
