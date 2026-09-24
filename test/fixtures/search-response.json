@@ -1,0 +1,177 @@
+{
+  "api": "mtop.taobao.idlemtopsearch.pc.search",
+  "v": "1.0",
+  "ret": [
+    "SUCCESS::调用成功"
+  ],
+  "data": {
+    "resultList": [
+      {
+        "data": {
+          "item": {
+            "main": {
+              "exContent": {
+                "title": "MacBook Air M2 13寸 8G+256G 国行 带票",
+                "price": [
+                  {
+                    "text": "¥",
+                    "textColor": "#ff4400",
+                    "textSize": 12,
+                    "type": "sign"
+                  },
+                  {
+                    "text": "2999",
+                    "textColor": "#ff4400",
+                    "textSize": 20,
+                    "type": "number"
+                  }
+                ],
+                "priceTag": [],
+                "area": "上海 浦东新区",
+                "userNickName": "闲置数码小铺",
+                "picUrl": "//img.alicdn.com/imgextra/macbook.jpg",
+                "publishTime": "5分钟前",
+                "detailParams": {
+                  "itemId": "812345678901",
+                  "itemType": "detailCommonBuy",
+                  "soldPrice": "2999",
+                  "userNick": "闲置数码小铺",
+                  "title": "MacBook Air M2 13寸 8G+256G 国行 带票"
+                }
+              },
+              "clickParam": {
+                "args": {
+                  "item_id": "812345678901",
+                  "price": "2999",
+                  "displayPrice": "2999"
+                }
+              },
+              "targetUrl": "fleamarket://item?id=812345678901&referPageArgs=2K+%E6%98%BE%E7%A4%BA%E5%99%A8&gulSource=search"
+            }
+          }
+        }
+      },
+      {
+        "data": {
+          "item": {
+            "main": {
+              "exContent": {
+                "title": "MacBook Air M2 求购 有的联系",
+                "price": [
+                  {
+                    "text": "¥"
+                  },
+                  {
+                    "text": "1800"
+                  }
+                ],
+                "area": "北京",
+                "userNickName": "收机器的人",
+                "publishTime": "1小时前",
+                "detailParams": {
+                  "itemId": "812345678902",
+                  "soldPrice": "1800",
+                  "userNick": "收机器的人"
+                }
+              },
+              "clickParam": {
+                "args": {
+                  "item_id": "812345678902",
+                  "price": "1800"
+                }
+              },
+              "targetUrl": "fleamarket://item?id=812345678902&referPageArgs=2K+%E6%98%BE%E7%A4%BA%E5%99%A8&gulSource=search"
+            }
+          }
+        }
+      },
+      {
+        "data": {
+          "item": {
+            "main": {
+              "exContent": {
+                "title": "MacBook Air M2 展示机 仅拆封",
+                "price": [],
+                "area": "深圳",
+                "userNickName": "商家专营",
+                "publishTime": "3天前",
+                "detailParams": {
+                  "itemId": "812345678903",
+                  "soldPrice": "9999",
+                  "userNick": "商家专营"
+                }
+              },
+              "clickParam": {
+                "args": {
+                  "item_id": "812345678903",
+                  "price": "9999"
+                }
+              },
+              "targetUrl": "fleamarket://item?id=812345678903&referPageArgs=2K+%E6%98%BE%E7%A4%BA%E5%99%A8&gulSource=search"
+            }
+          }
+        }
+      },
+      {
+        "data": {
+          "item": {
+            "main": {
+              "exContent": {
+                "title": "MacBook Air M2 全原无修",
+                "price": [
+                  {
+                    "text": "¥"
+                  },
+                  {
+                    "text": "1.2万"
+                  }
+                ],
+                "area": [
+                  {
+                    "province": "浙江",
+                    "city": "杭州"
+                  }
+                ],
+                "userNickName": "杭州老哥",
+                "publishTime": "刚刚",
+                "detailParams": {
+                  "itemId": "812345678904",
+                  "soldPrice": "12000",
+                  "userNick": "杭州老哥"
+                }
+              },
+              "clickParam": {
+                "args": {
+                  "item_id": "812345678904",
+                  "price": "12000"
+                }
+              },
+              "targetUrl": "fleamarket://item?id=812345678904&referPageArgs=2K+%E6%98%BE%E7%A4%BA%E5%99%A8&gulSource=search"
+            }
+          }
+        }
+      },
+      {
+        "data": {
+          "item": {
+            "main": {
+              "exContent": {
+                "title": "MacBook Air M2 无 ID 的脏数据，应被丢弃",
+                "price": [
+                  {
+                    "text": "¥"
+                  },
+                  {
+                    "text": "2999"
+                  }
+                ]
+              },
+              "targetUrl": "not-a-url-just-text"
+            }
+          }
+        }
+      }
+    ],
+    "hasNextPage": false
+  }
+}

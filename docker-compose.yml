@@ -1,0 +1,32 @@
+services:
+  xianyu-monitor:
+    build: .
+    container_name: xianyu-monitor
+    restart: unless-stopped
+    env_file:
+      - .env
+    volumes:
+      # 配置只读挂载；data 目录必须可写，登录态与去重表都在里面。
+      # 首次部署前执行：mkdir -p data config.json 所在目录可写，并保证 data 对容器内 uid 1000 可写：
+      #   mkdir -p data && sudo chown -R 1000:1000 data
+      - ./config.json:/app/config.json:ro
+      - ./data:/app/data
+    logging:
+      driver: json-file
+      options:
+        max-size: "10m"
+        max-file: "3"
+    # 想用图形控制台就取消注释，并把 command 换成 web（记得在 config.json 里设 web.token）
+    # ports:
+    #   - "7788:7788"
+    # command: ["node", "src/cli.mjs", "web", "--no-open"]
+
+# 常用操作：
+#   首次登录（把二维码截图写到 ./data/login-qr.png，用闲鱼 App 扫码）：
+#     docker compose run --rm xianyu-monitor node src/cli.mjs login
+#   校验配置：
+#     docker compose run --rm xianyu-monitor node src/cli.mjs check
+#   测试通知渠道：
+#     docker compose run --rm xianyu-monitor node src/cli.mjs test-notify
+#   看日志：
+#     docker compose logs -f

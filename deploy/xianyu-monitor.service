@@ -1,0 +1,21 @@
+[Unit]
+Description=Xianyu keyword monitor
+After=network-online.target
+Wants=network-online.target
+
+[Service]
+Type=simple
+# 按实际路径修改
+WorkingDirectory=/opt/xianyu-monitor
+# 闲鱼会识别无头浏览器，必须用 xvfb-run 提供虚拟显示
+ExecStart=/usr/bin/xvfb-run -a /usr/bin/node src/cli.mjs run
+Restart=always
+RestartSec=10
+# 只给必要的写权限：data 目录需要可写，其余只读
+ReadWritePaths=/opt/xianyu-monitor/data
+Environment=NODE_ENV=production
+# 钉钉/企业微信等渠道的密钥放在 .env，由程序自己读取
+# EnvironmentFile=/opt/xianyu-monitor/.env
+
+[Install]
+WantedBy=multi-user.target

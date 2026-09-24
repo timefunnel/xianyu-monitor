@@ -1,0 +1,25 @@
+{
+  "name": "xianyu-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "description": "闲鱼关键词监控：命中规则后秒级推送到 Telegram / 钉钉 / 企业微信 / Bark / Server酱 / 自定义 webhook",
+  "license": "MIT",
+  "type": "module",
+  "engines": {
+    "node": ">=20.11"
+  },
+  "scripts": {
+    "start": "node src/cli.mjs run",
+    "web": "node src/cli.mjs web",
+    "login": "node src/cli.mjs login",
+    "export-cookies": "node src/cli.mjs export-cookies",
+    "once": "node src/cli.mjs once",
+    "dump": "node src/cli.mjs dump",
+    "check": "node src/cli.mjs check",
+    "test:notify": "node src/cli.mjs test-notify",
+    "test": "node --test \"test/**/*.test.mjs\""
+  },
+  "dependencies": {
+    "playwright": "^1.63.0"
+  }
+}

@@ -1,0 +1,70 @@
+{
+  "browser": {
+    "baseUrl": "https://www.goofish.com",
+    "userDataDir": "./data/browser-profile",
+    "headless": false,
+    "locale": "zh-CN",
+    "timezoneId": "Asia/Shanghai",
+    "channel": "",
+    "executablePath": "",
+    "navigationTimeoutMs": 30000,
+    "responseTimeoutMs": 20000
+  },
+  "search": {
+    "mode": "http",
+    "timeoutMs": 20000,
+    "riskCookies": "omit"
+  },
+  "monitor": {
+    "maxBackoffSeconds": 300,
+    "onUnknownField": "pass",
+    "heartbeatHours": 6,
+    "failureAlertThreshold": 3,
+    "notifyOnStart": true
+  },
+  "storage": {
+    "stateFile": "./data/state.json",
+    "seenLimit": 20000,
+    "seenRetentionDays": 30
+  },
+  "linkTemplate": "https://www.goofish.com/item?id={id}",
+  "web": {
+    "port": 7788,
+    "host": "127.0.0.1",
+    "token": "",
+    "open": true
+  },
+  "notify": {
+    "timeoutMs": 10000,
+    "maxPerCycle": 8,
+    "channels": [
+      {
+        "type": "telegram",
+        "botToken": "${TG_BOT_TOKEN}",
+        "chatId": "${TG_CHAT_ID}"
+      }
+    ]
+  },
+  "tasks": [
+    {
+      "name": "macbook-air-m2",
+      "enabled": true,
+      "keyword": "MacBook Air M2",
+      "intervalSeconds": 120,
+      "jitterSeconds": 20,
+      "scrollRounds": 0,
+      "jumpLink": "app",
+      "nativeFilters": {
+        "priceRange": [2000, 3200],
+        "region": "江浙沪"
+      },
+      "filters": {
+        "requireKeywords": [],
+        "excludeKeywords": ["求购", "仅拆封", "展示机", "代拍", "无货", "预定", "回收"],
+        "excludeSellers": [],
+        "maxAgeMinutes": 60,
+        "cityContains": ""
+      }
+    }
+  ]
+}

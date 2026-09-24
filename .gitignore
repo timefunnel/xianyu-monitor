@@ -1,0 +1,28 @@
+# 运行数据与凭据：绝对不要提交
+node_modules/
+data/
+config.json
+.env
+.env.local
+
+# data/ 里的东西是最要命的一类，这里再单独挡一道（万一有人把文件挪出 data/）：
+#   cookies.json      —— 你的登录凭据，等于账号密码
+#   browser-profile/  —— 完整浏览器 profile，含登录态
+#   hits.json / state.json —— 你的监控历史
+cookies.json
+browser-profile/
+hits.json
+state.json
+
+# 调研期间的第三方抓取物：**都是别人的版权内容**（含 GPL/AGPL 与无许可证项目），
+# 只是本地参考资料，不能随本仓库分发。已经存在的本地副本保留，但一律不进版本库。
+_gh_raw.json
+_licenses.json
+_issues/
+_readmes/
+_src/
+
+# 调试产物
+dump-*.json
+*.log
+*.tmp
