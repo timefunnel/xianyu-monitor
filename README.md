@@ -5,7 +5,7 @@
 > - 本项目**仅供学习交流**：它的价值在于把「Web 自动化 / 接口协议适配 / 调度与去重 / 风控现象观测」这些问题摊开来讨论，代码和文档里记录了完整的实测过程与踩坑结论。
 > - **请勿使用你的主账号。** 它通过程序自动化访问闲鱼，**违反《闲鱼用户协议》**。平台的处置是有梯度的：先用风控把接口拒掉（本项目开发过程中反复撞到 `RGV587` 与 `action=deny`），再严重就可能限制账号功能甚至封号。**请用小号，并接受该小号可能损失。**
 > - **不要**用于代拍、代抢、批量倒卖等经营行为，也**不要**对外提供服务——那属于经营行为，风险量级完全不同。
-> - **不要**把 `data/` 目录交给任何人、也不要提交到仓库：`data/cookies.json` 就是你的登录凭据（等同账号密码），`data/browser-profile/` 是完整登录态。仓库的 `.gitignore` 已经把整个 `data/` 挡在外面。
+> - **不要**把 `data/` 目录交给任何人、也不要提交到仓库：`data/cookies.json` 就是你的登录凭据（等同账号密码）。仓库的 `.gitignore` 已经把整个 `data/` 挡在外面。
 > - 本项目不代下单、不代支付、不接触任何资金环节；不实现验证码绕过，也不伪造浏览器指纹。
 > - **使用所产生的一切后果由使用者自行承担**，作者不承担任何责任。
 
@@ -18,7 +18,7 @@
 以下都是实测结论，直接决定方案可行性：
 
 1. **搜索接口要求登录**。未登录调用 `mtop.taobao.idlemtopsearch.pc.search` 会返回错误码并带上登录页地址，拿不到任何商品。所以必须先扫码登录。
-2. **登录默认不需要浏览器**。扫码登录走纯 HTTP，二维码用半块字符画在终端里（`node src/cli.mjs login`），手机扫屏幕即可。只有 `--browser` 那条降级路径才需要**有头**浏览器——`headless: true` 时闲鱼首页返回「非法访问」、二维码不渲染，所以配置默认 `headless: false`，服务器上那条路要配 `xvfb-run`。
+2. **登录不需要浏览器**。扫码登录走纯 HTTP，二维码用半块字符画在终端里（`node src/cli.mjs login`），手机扫屏幕即可。整个项目不再依赖 Playwright、Chromium 或 Xvfb。
 3. **搜索接口有频率限制，做不到「秒级」**。实测短时间内连续 3 次搜索就返回 `RGV587_ERROR::SM::哎哟喂,被挤爆啦`，冷却约 3 分钟。所以现实节奏是**每个任务 60~120 秒一次**，本工具的定位是「捡漏提醒」而不是「抢拍工具」；被限流时主循环会直接进入最长冷却（默认 300 秒）并告警。
 4. **网页端不能下单**。goofish.com 支持搜索、比价、一键沟通，但下单要回 App。所以本工具的终点是「推送 + 你点链接去 App 下单」。
 
@@ -133,12 +133,6 @@ npm run test:notify                    # 给所有渠道发一条测试消息
 npm start                              # 开始监控
 ```
 
-本机有桌面时用内置 Chromium 即可；也可以把 `browser.channel` 设成 `chrome` 或 `msedge` 复用系统已装的浏览器，省掉内核下载：
-
-```bash
-npx playwright install chromium        # 或者跳过这步，改用系统浏览器
-```
-
 先跑一轮看不推送的结果，用来调关键词和过滤条件：
 
 ```bash
@@ -154,7 +148,7 @@ node src/cli.mjs once --task macbook-air-m2 --notify   # 确认无误后再真�
 node src/cli.mjs login          # 终端里出现二维码，手机扫屏幕即可
 ```
 
-所以整条链路（登录 + 监控）都可以没有 Chromium、没有 Xvfb。想用浏览器登录（例如想看窗口里的码，或 HTTP 路径出问题时）加 `--browser`，那条路仍然需要 `xvfb-run`。
+整个项目（登录 + 监控 + 控制台）都不需要 Chromium、不需要 Xvfb、也不需要 Playwright。
 
 ### 服务器上登录：两条路都行
 
@@ -182,9 +176,8 @@ scp data/cookies.json 用户@服务器:/opt/xianyu-monitor/data/
 
 | 需要 | 什么时候用 | 说明 |
 | --- | --- | --- |
-| **Node.js ≥ 20.11** | 一直 | 运行时依赖只有 `qrcode-generator`（纯 JS，用来画终端二维码）；Playwright 只在 `--browser` 登录与 `export-cookies` 时才会被加载 |
+| **Node.js ≥ 20.11** | 一直 | 运行时依赖只有一个纯 JS 包（`qrcode-generator`，用来把二维码画在终端里） |
 | `data/cookies.json` | 监控运行期间 | **登录态就在这里**，靠 volume 挂载持久化 |
-| Xvfb + Chromium | **只在用 `--browser` 登录时** | 默认的纯 HTTP 登录不需要它们；监控也不需要 |
 
 由此得到的几条现实结论：
 
@@ -195,18 +188,14 @@ scp data/cookies.json 用户@服务器:/opt/xianyu-monitor/data/
 - **「点开看商品」始终在你自己的浏览器里打开**——服务端不参与，也就不会有"点了没反应"。
 - **登录态过期后要重新扫码**，这一步绕不开（平台要求），但**在服务器终端里就能完成**。
 
-### 浏览器现在只剩一个降级位
+### 这个项目里已经没有浏览器了
 
-登录已经改走纯 HTTP（见上），「点开看商品」也改成始终在你自己的浏览器里打开，所以浏览器在整条链路里只剩一处用途：
+登录走纯 HTTP（二维码打在终端里），「点开看商品」在你自己的浏览器里打开，监控与搜索都是直连接口。所以：
 
-| 用途 | 是否必需 |
-| --- | --- |
-| `login --browser` | **不必需**。默认的终端二维码路径失败时的降级手段 |
-| `export-cookies` | **不必需**。只在"profile 里已有有效登录态、想把它落到文件"时才用 |
+- **运行时不需要 Playwright、Chromium、Xvfb**——`npm install --omit=dev` 之后只有一个纯 JS 依赖；
+- Playwright 仍在 `devDependencies` 里，但**只给验收脚本用**（`check-console-*.mjs` / `check-ui-metrics.mjs` 这些要真浏览器才能跑，`npm test` 用不到它）。
 
-也就是说：**不装 Chromium、不装 Xvfb，这个项目也能完整跑起来**（登录 + 监控 + 控制台）。真要把 Playwright 依赖也删掉，剩下的工作量就在 `export-cookies` 与浏览器登录这条降级路径上。
-
-**一句必须说清的话**：纯 HTTP 登录走的是网页端 passport 的二维码流程，它**没有公开文档**——和本项目已经复刻的 mtop 签名属于同一层性质。我们做的是**独立实现**（照协议事实重写，没有抄任何实现的代码：三个现成的纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件）。不想用这条路就用 `--browser`。
+**一句必须说清的话**：纯 HTTP 登录走的是网页端 passport 的二维码流程，它**没有公开文档**——和本项目已经复刻的 mtop 签名属于同一层性质。我们做的是**独立实现**（照协议事实重写，没有抄任何实现的代码：三个现成的纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件）。
 
 ### 方式一：Docker Compose（推荐）
 
@@ -218,15 +207,13 @@ docker compose up -d
 docker compose logs -f
 ```
 
-`config.json` 与 `data/` 通过 volume 挂载，容器重建不丢登录态；登录二维码会写到宿主机 `./data/login-qr.png`。
+`config.json` 与 `data/` 通过 volume 挂载，容器重建不丢登录态；登录时二维码直接打在容器终端里。
 
 ### 方式二：systemd
 
 ```bash
 sudo cp -r . /opt/xianyu-monitor && cd /opt/xianyu-monitor
 npm install --omit=dev
-npx playwright install --with-deps chromium
-sudo apt-get install -y xvfb xauth          # 提供虚拟显示
 sudo cp deploy/xianyu-monitor.service /etc/systemd/system/
 sudo systemctl enable --now xianyu-monitor
 journalctl -u xianyu-monitor -f
@@ -234,52 +221,41 @@ journalctl -u xianyu-monitor -f
 
 ### 方式三：群晖等 NAS
 
-用 Container Manager 导入 `docker-compose.yml`（entrypoint 自带 xvfb），把 `config.json` 与 `data` 目录映射到共享文件夹。
+用 Container Manager 导入 `docker-compose.yml`，把 `config.json` 与 `data` 目录映射到共享文件夹。
 
 <details>
 <summary>不用 Docker 直接在 NAS 上跑</summary>
 
-需要自行安装 Node 20+、Chromium、`xvfb`，然后用「任务计划」或 `nohup` 执行：
+只需要 Node 20+（**不需要 Chromium、不需要 xvfb**），然后用「任务计划」或 `nohup` 执行：
 
 ```bash
-xvfb-run -a node src/cli.mjs run
+node src/cli.mjs run
 ```
 </details>
 
 ## 登录态怎么维护（关键一步）
 
-**登录态有两个落点，职责不同**：
+登录态只有**一个**落点：`data/cookies.json`。扫码登录直接写它，mtop 响应里的 `Set-Cookie` 会持续回写——所以它是持续更新的，别改成只读。
 
-| 位置 | 谁在用 | 说明 |
-| --- | --- | --- |
-| `data/cookies.json` | **监控搜索**（http 模式） | 登录态的**唯一来源**：扫码登录直接写它，mtop 响应里的 `Set-Cookie` 会持续回写 |
-| `data/browser-profile/` | 仅 `--browser` 登录 | 用 `--browser` 登录时才会用到；默认的纯 HTTP 登录不碰它 |
-
-纯 HTTP 扫码登录会**直接**写 `data/cookies.json`，不需要额外操作。如果你以前一直用浏览器模式跑、profile 里已经有有效登录态，**不必重新扫码**，一条命令就能把登录态落到文件：
+**会话失效时**（日志报「服务端会话已失效」或搜索要求登录）重新扫码即可：
 
 ```bash
-node src/cli.mjs export-cookies
+node src/cli.mjs login
 ```
 
-它不导航、不请求，只是把 profile 里已有的 cookie 读出来落盘。**会话失效时**（日志报「服务端会话已失效」或搜索要求登录）重新扫码即可，同样会自动落盘。
+它不导航、不请求别的页面，只走 passport 的二维码接口。登录失败**不会**覆盖原来那份能用的登录态（有测试钉着）。
 
-> `cookie2` 是**会话级 cookie**（关掉浏览器即失效），而 mtop 必须带它。以前这条续期是靠每次加载页面被动拿到的；搜索改走直连之后，只剩 mtop 响应里的 `Set-Cookie` 这一条途径——所以 cookie 文件会被持续回写，别把它改成只读。
+> `cookie2` 是**会话级 cookie**（关掉浏览器即失效），而 mtop 必须带它。以前这条续期是靠每次加载页面被动拿到的；搜索改走直连之后，只剩 mtop 响应里的 `Set-Cookie` 这一条途径——所以 cookie 文件会被持续回写。
 
 闲鱼网页端是**扫码登录**，二维码几分钟就失效。现在**在服务器终端里直接就能扫**，不必再折腾截图或图形界面：
 
-1. **终端二维码（默认，推荐）**
+1. **终端二维码（推荐）**
    ```bash
    node src/cli.mjs login
    ```
    二维码用半块字符画在终端里，手机对着屏幕扫即可。纯 HTTP 实现，**不需要浏览器、不需要图形界面**，容器里也一样。扫码确认后会自动完成登录并把登录态写进 `data/cookies.json`。`--timeout 600` 可以把等待时间放宽到 10 分钟。
 
-2. **浏览器路径（降级手段）**：HTTP 路径出问题时加 `--browser`，回到"开有头浏览器 + 二维码截图"的老路。
-   ```bash
-   node src/cli.mjs login --browser --out /volume1/share/login-qr.png
-   ```
-   注意这条**必须**在有头模式下运行（闲鱼对无头请求返回「非法访问」页，二维码不会渲染），服务器上要 `xvfb-run -a node src/cli.mjs login --browser`。
-
-3. **在别的机器上登录后拷 `data/cookies.json`**：几 KB 的 JSON，跨平台直接可用。
+2. **在别的机器上登录后拷 `data/cookies.json`**：几 KB 的 JSON，跨平台直接可用。
 
 登录态通常能维持数周；失效后搜索接口会返回 `RGV587_ERROR`，日志与推送里会直接提示重新登录。
 
@@ -289,19 +265,7 @@ node src/cli.mjs export-cookies
 
 ```jsonc
 {
-  "browser": {
-    "baseUrl": "https://www.goofish.com",
-    "userDataDir": "./data/browser-profile",  // 登录态存这里
-    "headless": false,                        // 扫码登录必须 false；监控不启浏览器，这一项只影响登录
-    "channel": "",                            // 例如 "chrome" / "msedge"，复用系统浏览器
-    "executablePath": "",                     // 非标准安装路径时指定
-    "locale": "zh-CN",
-    "timezoneId": "Asia/Shanghai",
-    "navigationTimeoutMs": 30000,
-    "responseTimeoutMs": 20000
-  },
   "search": {
-    "mode": "http",                           // http=直连 mtop，每轮恒 1 次请求（默认）；browser=驱动页面
     "timeoutMs": 20000,
     "riskCookies": "omit"                     // omit=不发这类风控状态 cookie（默认）；remembered=带但剔掉已知会被拒的值
   },
@@ -403,7 +367,6 @@ node src/cli.mjs export-cookies
 | 模式 | 每轮请求次数 | 说明 |
 | --- | --- | --- |
 | `http`（默认） | **恒为 1** | 直接调 mtop，1 次请求拿到 30 条 |
-| `browser` | 冷启动 4~6，之后 1 | 驱动页面；**已弃用，不再维护**，留着只为回退 |
 
 改直连的原因是**请求密度**：驱动页面时每次冷启动都会在几秒内连发 4~6 次，而突发正是风控的触发条件。直连之后这个连发从根上没有了。
 
@@ -581,8 +544,7 @@ https://www.goofish.com/im?itemId=<id>&peerUserId=<uid>   # 直达聊天
 ```bash
 node src/cli.mjs web          # 图形控制台（等价于 npm run web）
 node src/cli.mjs run          # 纯命令行启动监控（默认命令）
-node src/cli.mjs login        # 扫码登录：二维码打在终端里（纯 HTTP，不启浏览器）；--browser 走浏览器路径
-node src/cli.mjs export-cookies  # 把 profile 里已有的登录态导出到 cookie 文件（不导航、不请求、不用重新扫码）
+node src/cli.mjs login        # 扫码登录：二维码直接打在终端里，不需要浏览器
 node src/cli.mjs check        # 静态校验配置与运行环境
 node src/cli.mjs once         # 跑一轮只打印，不推送；--notify 才推送
 node src/cli.mjs dump         # 保存原始响应，用于接口字段变化时改适配层
@@ -612,24 +574,23 @@ node src/cli.mjs test-notify  # 测试所有通知渠道
 | 日志出现「请求被闲鱼拦截（RGV587_ERROR…被挤爆啦）」 | 分两种，先看处罚链接里的 `action`：`deny` 是直接拒绝（见下面「被『访问被拒绝』拦住」），其余按频率过高处理——调大 `intervalSeconds`（≥60）后再试；该错误码在登录失效时也会出现，若降速后依旧如此再重新 `login` |
 | 日志出现「搜索接口被闲鱼直接拒绝（action=deny）」 | 不是频率问题，调间隔、重新登录、过验证都无效。跑 `node diagnose-risk.mjs` 看结论 |
 | 日志出现「搜索接口要求登录」 | 会话失效，重新执行 `login` |
-| 启动就报「登录态不可用 / 会话已失效」 | `data/cookies.json` 不存在或已过期。在终端跑 `node src/cli.mjs export-cookies`（把 profile 里现有的登录态落盘），或 `npm run login` 重新扫码 |
-| 启动就报「服务端会话已失效」 | 同上，或 profile 未同步到本机 |
+| 启动就报「登录态不可用 / 会话已失效」 | `data/cookies.json` 不存在或已过期。跑 `npm run login` 重新扫码（二维码打在终端里） |
 | 日志出现「回退到 DOM 解析」 | 搜索接口结构变了。`once` 仍能拿到商品则能用，但字段会缺；执行 `dump` 保存响应后按需改 `src/parse.mjs` |
 | 命中数长期为 0 | 看心跳里的「扫描 N 条」。扫描为 0 是抓取问题，扫描很多但命中 0 是过滤太严 —— 用 `once` 看每条被跳过的原因 |
 | 推送里出现「价格未知」 | 接口没返回价格。先跑 `dump` 保存原始响应，再看 `src/parse.mjs` 的取价字段是否需要调整 |
 | 推送不出去 | `test-notify` 逐个渠道看报错，key 或 webhook 填错最常见 |
-| 浏览器启动失败并提示 `Missing X server or $DISPLAY` | 服务器缺图形界面，用 `xvfb-run -a` 启动 |
+| 扫码后终端里的二维码扫不出来 | 终端字体需要是等宽且支持半块字符；实在不行把窗口拉宽一点（二维码用半块字符拼的）。也可以换台机器登录后拷 `data/cookies.json` |
 
 ## 风险与合规
 
 - **违反《闲鱼用户协议》。** 本工具通过程序自动化访问闲鱼并抓取搜索接口，平台对这类行为有明确处置手段。处置是**有梯度**的，本项目实测到的顺序是：接口返回 `RGV587` → 处罚链接 `action=deny`（页面显示「访问被拒绝」）→ 登录态失效。再严重就是限制功能甚至封号。
 - **只用小号，主号请勿使用。** 这不是客套话：本项目开发过程中同一个账号在几小时内被反复风控，最后直接导致登录态失效、必须重新扫码。
 - **保持低频。** 默认每轮恰好 1 次请求、轮询 120 秒；全局闸 `monitor.minRequestGapSeconds` 保证「立即检查」多任务与调试脚本也不会并发或短时高频。**不要**为了"快一点"把这些值调小——被拒的请求本身就是又一次风控压力。
-- **不要**把账号 cookie、`data/cookies.json` 或 `data/browser-profile` 交给任何第三方（含"代拍"服务），已有隐私泄露的公开报道。仓库的 `.gitignore` 已把整个 `data/` 排除在外。
+- **不要**把账号 cookie、`data/cookies.json` 交给任何第三方（含"代拍"服务），已有隐私泄露的公开报道。仓库的 `.gitignore` 已把整个 `data/` 排除在外。
 - **本工具做了什么、没做什么**（如实说明，别只看标签）：
   - **没有**实现验证码绕过，**没有**伪造浏览器指纹，也**没有**逆向 App 端签名（`x-sign` / `x-mini-wua` 那一族依赖真机 native 库，本项目不碰）。
   - **复刻了网页端公开的 H5 mtop 签名**（`md5(token&t&appKey&data)`）。这本身也是一条取舍：它把每轮请求数从 5 降到 1，但确实越过了本项目早期「不复刻任何签名」的自我约束。
-  - **登录走网页端 passport 的二维码流程**（`/newlogin/qrcode/*` + `/login_token/login.do`）。它同样没有公开文档，和上面那条 H5 签名属于同一层性质。实现是照协议事实**独立重写**的——现成的三个纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件，一行代码都没抄。不想用这条路就加 `--browser`。
+  - **登录走网页端 passport 的二维码流程**（`/newlogin/qrcode/*` + `/login_token/login.do`）。它同样没有公开文档，和上面那条 H5 签名属于同一层性质。实现是照协议事实**独立重写**的——现成的三个纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件，一行代码都没抄。
   - 默认**不携带**平台下发的风控状态 cookie（`search.riskCookies: "omit"`）。实测它只是把平台施加的处罚带过来、并不承担功能，不带它请求照常成功；但这等于让客户端绕开平台施加的这道处罚。默认值如此，是否接受由使用者自行判断。
 - **资金安全**：本工具完全不接触支付环节，不代下单、不代支付。
 
@@ -639,23 +600,23 @@ node src/cli.mjs test-notify  # 测试所有通知渠道
 
 | `action` | 现象 | 有无人工作用 |
 | --- | --- | --- |
-| `captcha` / `verify` | 页面弹滑块 | 有。用**普通 Chrome** 打开同一个 profile 过掉：`node open-profile-in-chrome.mjs`（自动化窗口里过不了，别在里面反复试） |
+| `captcha` / `verify` | 页面弹滑块 | 有。用**普通 Chrome** 打开闲鱼过掉（自动化窗口里过不了，别在里面反复试） |
 | `deny` | 页面显示「访问被拒绝」，没有可点的验证项 | **没有**。调大间隔、重新登录、过验证都无效 |
 
-程序侧的配合：两种都会**立刻告警**并按 `monitor.riskControlCooldownSeconds`（默认 30 分钟）长时间退避——重试没有意义，只会让风控等级更难下来。想确认当前是哪种形态，跑 `node diagnose-risk.mjs`（一次页面加载，顺带打出会话状态与同一批里其它 mtop 接口的结果）。
+程序侧的配合：两种都会**立刻告警**并按 `monitor.riskControlCooldownSeconds`（默认 30 分钟）长时间退避——重试没有意义，只会让风控等级更难下来。想确认当前是哪种形态，跑 `node diagnose-risk.mjs`：**不加载页面**，只用几次 mtop 请求打出会话状态、同一批里其它接口的结果，以及搜索失败的归类。
 
 **最省事的办法是从源头上不撞它**：`intervalSeconds` 保持 120 秒以上、别为了调试反复手翻搜索页、多任务时留意启动时那条总频率提醒。调试用 `once` 或 `debug-single-cycle.mjs`（跑一轮就停），不要连着跑。
 
 ### 这一节是怎么定性的
 
-同一个错误码有两种形态，从日志里看不出区别，所以 `diagnose-risk.mjs` 用一次页面加载把关键事实摊开：会话是否真的有效、**同一批请求里其它 mtop 接口成不成功**（只有 search 失败＝搜索接口被单独判定；全都失败＝会话问题）、处罚链接给的是 `deny` 还是验证。
+同一个错误码有两种形态，从日志里看不出区别，所以 `diagnose-risk.mjs` 用几次 mtop 请求把关键事实摊开：会话是否真的有效、**同一批请求里其它 mtop 接口成不成功**（只有 search 失败＝搜索接口被单独判定；全都失败＝会话问题）、搜索失败的归类是 `deny` 还是 `baxia`。它不加载页面——**加载页面本身也可能是一次风控压力**。
 
 结论是：`deny` 不是频率问题（停机数小时后**第一个**请求就会被拒）、不是登录问题（同一批里其它接口全 `SUCCESS`）、也**与客户端形态无关**（不启浏览器的纯 HTTP 请求同样会复现）。所以程序不做"换个姿势再试一次"这种事，而是退避 + 告警。
 
 几条已经验证过、不必再花时间的路：
 
 - **换 UA / 手机版网页没用**：`www.goofish.com/search` 在手机 UA 下仍是同一个 PC SPA、同一个接口；也没有可用的 H5 搜索站。
-- **只去掉自动化特征没用**：`browser.attach` 让 Chrome 自己启动（页面里 `navigator.webdriver` 为 false）再 CDP 附加，实测对 `deny` 毫无影响——`connectOverCDP` 与 `launch` 在 CDP 层走的是同一条初始化路径。字段留着，别指望它。
+
 - **别改走 App 协议**：移动端那套签名（`x-sign` / `x-mini-wua` / `x-sgext` / `x-umt`）依赖真机 native 库，公开的复刻方案目前仍过不了服务端校验。
 
 ## 目录结构
@@ -664,8 +625,7 @@ node src/cli.mjs test-notify  # 测试所有通知渠道
 src/
   cli.mjs        命令入口与参数解析
   config.mjs     配置加载、${ENV} 展开、校验
-  browser.mjs    Playwright 会话：登录态、二维码截图、页面生命周期
-  search.mjs     browser 模式的搜索收集（**已弃用**，保留仅为回退）
+  search.mjs     筛选条件与请求体的对应关系（价格 / 区域 / 排序 / 发布时间窗）
   mtop.mjs       直连搜索（默认）：构造请求体、H5 签名、每轮 1 次请求、全局请求闸
   cookies.mjs    文件版 cookie 仓库：登录态的唯一来源，mtop 响应里的 Set-Cookie 会回写到这里
   qrlogin.mjs    纯 HTTP 扫码登录：passport 流程 + 终端二维码渲染，不启浏览器
@@ -678,10 +638,10 @@ src/
   server.mjs     控制台 HTTP 服务：JSON 接口、SSE 实时日志、令牌校验
   web/index.html 控制台前端（单文件，零依赖）
 test/            node --test 单测与集成测试（用假 Page / 假 fetch / 假 supervisor）
-deploy/          systemd 单元示例、容器 entrypoint（自带 xvfb 包装）
+deploy/          systemd 单元示例
 docs/           调研记录：闲鱼开源生态、mtop 签名方案、反检测与真机路线（含证据分级与出处）
 start.cmd        Windows 双击启动控制台
-start.sh         Linux / NAS 启动控制台（自动包 xvfb-run）
+start.sh         Linux / NAS 启动控制台（首次自动装依赖）
 check-console.mjs  控制台验收：真机加载页面、抓 JS 错误、点测试通知与启停
 check-console-tasks.mjs  任务增删改验收：走一遍编辑/新建/即时生效/删除，跑完自动还原 config.json 与运行时
 check-console-ui.mjs     主题/滚动条/单任务开关验收：含亮色主题对比度与开关失败回滚，跑完自动还原 config.json
@@ -694,7 +654,6 @@ debug-single-cycle.mjs   受控调试：配好原生筛选后只跑一轮就停�
 diagnose-risk.mjs        风控体检：一次页面加载判定是限流、会话失效还是「直接拒绝」，并给出下一步
 clean-test-residue.mjs   清理验收脚本留下的测试任务在命中历史与去重表里的记录（默认只预览，--dry-run）
 check-ui-metrics.mjs     界面度量：页面高度、各区高度、超长文本、偏小按钮、横向溢出
-check-publish-dropdown.mjs  browser 模式「新发布」下拉的离线验收（**已弃用路径**，保留备查）
 check-console-notify-ui.mjs  通知渠道界面 + 命中重推的验收：真浏览器 + 桩 supervisor，不碰闲鱼
 ```
 

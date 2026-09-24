@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { FileCookieStore, defaultCookieFile, exportContextCookies, hydrateContext, parseSetCookie } from '../src/cookies.mjs';
+import { FileCookieStore, defaultCookieFile, parseSetCookie } from '../src/cookies.mjs';
 
 const tempFile = () => path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-cookie-')), 'cookies.json');
 
@@ -80,51 +80,4 @@ test('refuse 记的是具体值，换发新值不受牵连，且跨重启仍然�
   assert.equal(reloaded.isRefused('sgcookie', 'bad-2'), false, '服务端换发的新值不该被牵连');
 });
 
-test('exportContextCookies 报出缺失的必需 cookie', async () => {
-  // 实测踩到的坑：cookie2 是会话级 cookie，浏览器一关就没了。这时导出得到的是
-  // 「看起来正常但缺件」的登录态，拿去请求只会得到 SESSION_EXPIRED——必须让人看见这件事。
-  const file = tempFile();
-  const store = new FileCookieStore({ file });
-  const withoutCookie2 = {
-    async cookies() {
-      return [
-        { name: 'unb', value: '1', domain: '.goofish.com', path: '/' },
-        { name: '_m_h5_tk', value: 'tok_1', domain: '.goofish.com', path: '/' },
-      ];
-    },
-  };
 
-  assert.deepEqual(await exportContextCookies(withoutCookie2, store), { count: 2, missing: ['cookie2'] });
-  assert.equal((await store.load()).size, 2, '缺件也要照常落盘，只是要告警');
-
-  const complete = {
-    async cookies() {
-      return [
-        { name: 'unb', value: '1', domain: '.goofish.com', path: '/' },
-        { name: 'cookie2', value: 'abc', domain: '.goofish.com', path: '/' },
-      ];
-    },
-  };
-  assert.deepEqual(await exportContextCookies(complete, new FileCookieStore({ file: tempFile() })), {
-    count: 2,
-    missing: [],
-  });
-});
-
-test('hydrateContext 逐个灌入，个别被拒不影响其余', async () => {
-  const added = [];
-  const context = {
-    async addCookies(cookies) {
-      if (cookies[0].name === 'bad') throw new Error('rejected by browser');
-      added.push(cookies[0].name);
-    },
-  };
-  const jar = new Map([
-    ['unb', { name: 'unb', value: '1' }],
-    ['bad', { name: 'bad', value: '2' }],
-    ['cookie2', { name: 'cookie2', value: '3' }],
-  ]);
-
-  assert.deepEqual(await hydrateContext(context, jar), { ok: 2, failed: 1 });
-  assert.deepEqual(added, ['unb', 'cookie2']);
-});

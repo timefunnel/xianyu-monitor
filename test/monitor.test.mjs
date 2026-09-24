@@ -89,7 +89,7 @@ async function runRounds(
   const monitor = new Monitor({
     config,
     store,
-    browser,
+    searcher: browser,
     logger: logger ?? createLogger({ level: loggerLevel }),
     onNotified: (entry, _task, options) => recorded.push({ id: entry.id, pushed: options?.pushed !== false }),
   });
@@ -156,7 +156,7 @@ test('静默期间的失败告警照常发送（别把故障一起瞒掉）', as
       throw error;
     },
   };
-  const monitor = new Monitor({ config, store, browser, logger: createLogger({ level: 'error' }) });
+  const monitor = new Monitor({ config, store, searcher: browser, logger: createLogger({ level: 'error' }) });
   try {
     const runPromise = monitor.run();
     await new Promise((resolve) => setTimeout(resolve, 1200));
@@ -258,7 +258,7 @@ async function runFailing({ code, message, rounds, maxBackoffSeconds = 2, riskCo
       throw error;
     },
   };
-  const monitor = new Monitor({ config, store, browser, logger: createLogger({ level: 'error' }) });
+  const monitor = new Monitor({ config, store, searcher: browser, logger: createLogger({ level: 'error' }) });
   stopRef.value = monitor;
 
   try {
@@ -295,7 +295,7 @@ function twoTaskMonitor(intervalSeconds = 1) {
   });
   const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-two-')), 'state.json') }).load();
   const browser = idleBrowser();
-  const monitor = new Monitor({ config, store, browser, logger: createLogger({ level: 'error' }) });
+  const monitor = new Monitor({ config, store, searcher: browser, logger: createLogger({ level: 'error' }) });
   return { monitor, browser };
 }
 
@@ -307,7 +307,7 @@ test('一个任务都没启用时待命而不是退出（界面打开开关就�
   });
   const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-m-')), 'state.json') }).load();
   const browser = idleBrowser();
-  const monitor = new Monitor({ config, store, browser, logger: createLogger({ level: 'error' }) });
+  const monitor = new Monitor({ config, store, searcher: browser, logger: createLogger({ level: 'error' }) });
 
   const runPromise = monitor.run();
   await new Promise((resolve) => setTimeout(resolve, 200));
@@ -343,7 +343,7 @@ test('全局请求间隔闸：跨任务的搜索会被拉开到最小间隔', as
       return { items: [], source: 'api', raw: [], requests: 1 };
     },
   };
-  const monitor = new Monitor({ config, store, browser, logger: createLogger({ level: 'error' }) });
+  const monitor = new Monitor({ config, store, searcher: browser, logger: createLogger({ level: 'error' }) });
 
   const runPromise = monitor.run();
   await new Promise((resolve) => setTimeout(resolve, 2600));

@@ -8,14 +8,11 @@ if ! command -v node >/dev/null 2>&1; then
   exit 1
 fi
 
-if [ ! -d node_modules/playwright ]; then
+if [ ! -d node_modules/qrcode-generator ]; then
   echo "首次运行，正在安装依赖..."
   npm install --no-audit --no-fund
 fi
 
 echo "控制台启动后，在本机浏览器打开上面打印的地址；服务器上请用 ssh 端口转发或设置 web.token 后从局域网访问。"
-# 服务器上没有图形界面，闲鱼会识别无头浏览器，所以用 xvfb-run 提供虚拟显示。
-if [ -z "$DISPLAY" ] && command -v xvfb-run >/dev/null 2>&1; then
-  exec xvfb-run -a node src/cli.mjs web --no-open "$@"
-fi
+# 不需要 Xvfb：登录走纯 HTTP（二维码打在终端里），监控不启浏览器。
 exec node src/cli.mjs web --no-open "$@"

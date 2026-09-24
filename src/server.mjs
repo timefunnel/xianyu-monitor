@@ -234,15 +234,15 @@ export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0
         return;
       }
 
-      if (url.pathname === '/api/login-qr.png') {
-        // 二维码由登录流程每 5 秒覆盖一次，前端靠 ?t= 时间戳绕过缓存。
-        if (!existsSync(supervisor.qrPath)) {
+      if (url.pathname === '/api/login-qr.svg') {
+        // 二维码由登录会话生成后一直放在内存里，前端靠 ?t= 时间戳绕过缓存。
+        const svg = supervisor.login?.qrSvg;
+        if (!svg) {
           sendJson(response, 404, { ok: false, error: '二维码尚未生成' });
           return;
         }
-        const image = await readFile(supervisor.qrPath);
-        response.writeHead(200, { 'content-type': 'image/png', 'cache-control': 'no-store' });
-        response.end(image);
+        response.writeHead(200, { 'content-type': 'image/svg+xml; charset=utf-8', 'cache-control': 'no-store' });
+        response.end(svg);
         return;
       }
 

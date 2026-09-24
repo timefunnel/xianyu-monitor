@@ -9,6 +9,8 @@
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { withDefaults } from './config.mjs';
+import { FileCookieStore, defaultCookieFile } from './cookies.mjs';
+import { qrLogin } from './qrlogin.mjs';
 import { describeFilters, evaluate } from './rules.mjs';
 import { SeenStore } from './store.mjs';
 import { Monitor } from './monitor.mjs';
@@ -45,22 +47,26 @@ export class Supervisor {
    * @param {any} options.config 已补齐默认值、相对路径已解析的配置。
    * @param {string} options.configPath 配置文件绝对路径。
    * @param {any} options.logger 日志器。
-   * @param {(() => Promise<any>) | null} [options.createBrowser] 浏览器工厂；不传则启动真实 Playwright 会话。
+   * @param {Function} [options.createSearcher] 搜索器工厂（测试注入用；不传就用真的直连搜索器）。
+   * @param {Function} [options.qrLogin] 扫码登录实现（测试注入用；**测试必须注入**，否则会真的请求
+   *   passport —— 默认实现是会发网络请求的）。
    */
-  constructor({ config, configPath, logger, createBrowser }) {
+  constructor({ config, configPath, logger, createSearcher, qrLogin: qrLoginImpl }) {
     this.config = config;
     this.configPath = configPath;
     this.logger = logger;
-    this.createBrowser = createBrowser ?? null;
+    this.createSearcher = createSearcher ?? null;
+    this.qrLogin = qrLoginImpl ?? qrLogin;
     this.configDir = path.dirname(configPath);
     this.running = false;
     this.starting = false;
     this.session = 'unchecked';
     this.startedAt = null;
     this.lastError = null;
-    this.login = { active: false, qrUrl: '/api/login-qr.png' };
-    /** @type {import('./browser.mjs').GoofishBrowser|null} */
-    this.browser = null;
+    /** 扫码登录的进行状态：`active` 是否有流程在跑、`qrUrl` 给界面取二维码、`qrSvg` 是二维码本体。 */
+    this.login = { active: false, qrUrl: '/api/login-qr.svg', qrSvg: null, status: null };
+    /** 后台登录流程的完成信号；测试用它等收尾，避免轮询在测试结束后还在跑。 */
+    this.loginPromise = null;
     /** @type {Monitor|null} */
     this.monitor = null;
     /** 最近一次运行的统计快照。停止后仍要能在界面上看到，因此不随 monitor 一起清空。 */
@@ -262,79 +268,17 @@ export class Supervisor {
     };
   }
 
-  /** 确保浏览器已启动；不会重复启动。 */
-  async #ensureBrowser() {
-    if (this.browser) return this.browser;
-    if (this.createBrowser) {
-      this.browser = await this.createBrowser();
-      return this.browser;
-    }
-    const { GoofishBrowser } = await import('./browser.mjs');
-    mkdirSync(this.config.browser.userDataDir, { recursive: true });
-    const browser = new GoofishBrowser(this.config.browser, this.logger);
-    try {
-      await browser.open();
-    } catch (error) {
-      throw new Error(
-        `浏览器启动失败：${error.message}\n` +
-          `可能原因：① profile 被另一个实例占用（${this.config.browser.userDataDir}）` +
-          ' ② 环境没有图形界面，服务器上需要用 xvfb-run 启动',
-      );
-    }
-    this.browser = browser;
-    await this.#hydrateFromCookieFile(browser);
-    return browser;
-  }
-
-  /**
-   * 拉起浏览器时，把 cookie 文件里的登录态灌回去。
-   *
-   * 方向是「文件 → 浏览器」：搜索不再经过页面，续期只发生在文件那一侧
-   * （mtop 响应里的 Set-Cookie），所以文件比浏览器新。「点开看商品」要靠这个才是登录状态。
-   *
-   * @param {any} browser 刚拉起的浏览器。
-   * @returns {Promise<void>} 完成后 resolve；失败只告警。
-   */
-  async #hydrateFromCookieFile(browser) {
-    try {
-      const { FileCookieStore, hydrateContext, defaultCookieFile } = await import('./cookies.mjs');
-      const file = this.config.search?.cookieFile ?? defaultCookieFile(this.config);
-      const jar = await new FileCookieStore({ file, logger: this.logger }).load();
-      if (jar.size === 0) return;
-      const { ok, failed } = await hydrateContext(browser.context, jar);
-      this.logger.info(`已把 cookie 文件里的 ${ok} 个登录态灌回浏览器${failed > 0 ? `（${failed} 个被拒绝）` : ''}`, 'web');
-    } catch (error) {
-      this.logger.warn(`把 cookie 灌回浏览器失败：${error.message}`, 'web');
-    }
-  }
-
-  /** 把浏览器里的登录态落盘到 cookie 文件（http 模式靠它工作）。 */
-  async #exportCookieFile(browser) {
-    try {
-      const { FileCookieStore, defaultCookieFile } = await import('./cookies.mjs');
-      const file = this.config.search?.cookieFile ?? defaultCookieFile(this.config);
-      const { count, missing } = await browser.exportCookies(new FileCookieStore({ file, logger: this.logger }));
-      this.logger.info(`登录态已写入 ${file}（${count} 个 cookie），监控侧不再需要浏览器`, 'web');
-      if (missing.length > 0) {
-        this.logger.warn(`导出的登录态缺少 ${missing.join('、')}（会话级 cookie，浏览器一关就丢），监控会报会话失效`, 'web');
-      }
-    } catch (error) {
-      this.logger.warn(`登录态落盘失败（http 模式会因此没有 cookie）：${error.message}`, 'web');
-    }
-  }
-
   /**
    * 造一个「谁去搜」。
    *
-   * - `http`（默认）：文件版 cookie + 直连 mtop，每轮恰好 1 次请求，**不需要浏览器**。
-   * - `browser`：驱动页面那套，这时才需要把浏览器拉起来。
+   * 只有一条路：文件版 cookie + 直连 mtop，每轮恰好 1 次请求，**整个进程都不需要浏览器**。
    *
    * @returns {Promise<any>} 带 `search(task)` 与 `checkSession()` 的对象。
    */
   async #makeSearcher() {
+    if (this.createSearcher) return this.createSearcher({ config: this.config, logger: this.logger });
     const { createSearcher } = await import('./mtop.mjs');
-    const browser = this.config.search?.mode === 'browser' ? await this.#ensureBrowser() : undefined;
-    return createSearcher({ config: this.config, logger: this.logger, browser });
+    return createSearcher({ config: this.config, logger: this.logger });
   }
 
   /** 启动监控。已经在跑或正在启动时直接返回成功。 */
@@ -347,17 +291,11 @@ export class Supervisor {
       // 先把配置文件读进来：界面上「保存配置 → 停止 → 启动」是用户心里的一次重启，
       // 不重新加载的话他会以为保存没生效。
       await this.reloadConfig();
-      // http 模式**不拉起浏览器**：登录态来自 cookie 文件，浏览器只在扫码登录和
-      // 「点开看商品」时按需启动——那个空白窗口和服务器上的 Xvfb 需求一起消失了。
+      // 整个进程都不拉起浏览器：登录态来自 cookie 文件，扫码登录本身也是纯 HTTP。
       const searcher = await this.#makeSearcher();
       this.session = await searcher.checkSession();
       if (this.session === 'invalid') {
-        throw new Error(
-          this.config.search?.mode === 'browser'
-            ? '服务端会话已失效，请点「重新登录」扫码。'
-            : '登录态不可用：没有 cookie 文件，或会话已失效。点「重新登录」扫码即可；' +
-              '若 profile 里本来就有有效登录态，在终端执行 node src/cli.mjs export-cookies 更省事。',
-        );
+        throw new Error('登录态不可用：没有 cookie 文件，或会话已失效。点「重新登录」扫码即可（在服务器终端里跑 node src/cli.mjs login 也一样）。');
       }
 
       this.#ensureStore();
@@ -366,7 +304,6 @@ export class Supervisor {
       this.monitor = new Monitor({
         config: this.config,
         store: this.store,
-        browser: this.browser,
         searcher,
         logger: this.logger,
         // 与「立即检查」共用同一个页面队列。
@@ -413,10 +350,6 @@ export class Supervisor {
     if (this.store) {
       this.store.prune();
       this.store.save();
-    }
-    if (this.browser) {
-      await this.browser.close().catch(() => {});
-      this.browser = null;
     }
     this.running = false;
     this.startedAt = null;
@@ -540,83 +473,76 @@ export class Supervisor {
   }
 
   /**
-   * 开始扫码登录：清掉失效 Cookie、打开首页、定时把二维码截图写到磁盘。
-   * 登录成功后自动结束并把会话状态置为 valid。
+   * 开始扫码登录：起一个**纯 HTTP** 的二维码会话，二维码以 SVG 形式给界面。
+   *
+   * 不再需要浏览器——passport 的二维码流程本身就能用 HTTP 走完（见 qrlogin.mjs），
+   * 于是「服务器上登录要先装 Chromium + Xvfb」这件事彻底消失。
+   *
+   * 这里**不做"会话还有效就跳过"的预检查**：那要多发一次 mtop 请求，而用户点「重新登录」
+   * 本来就是主动行为；真还有效的话重新扫一次也不会有副作用（登录态会被新的一份覆盖）。
+   *
    * @param {number} [timeoutSeconds] 等待扫码的秒数。
-   * @returns {Promise<{ok: boolean, error?: string}>} 是否已开始（结果通过状态轮询获知）。
+   * @returns {Promise<{ok: boolean, active?: boolean, error?: string}>} 是否已开始（后续结果通过状态轮询获知）。
    */
-  async loginWithQr(timeoutSeconds = 300) {
+  async loginWithQr(timeoutSeconds = 180) {
     if (this.login.active) return { ok: true };
     if (this.running) await this.stop();
-    try {
-      const browser = await this.#ensureBrowser();
-      const existing = await browser.checkSession();
-      if (existing === 'valid') {
+
+    this.login.active = true;
+    this.login.qrSvg = null;
+    this.login.status = null;
+    this.#stateChanged();
+    this.logger.info('已开始扫码登录（纯 HTTP，不需要浏览器）', 'web');
+
+    const file = this.config.search?.cookieFile ?? defaultCookieFile(this.config);
+    const store = new FileCookieStore({ file, logger: this.logger });
+
+    // 整个流程在后台跑，界面靠状态轮询看进度：二维码、当前状态、错误。
+    // 存下 promise 是为了测试能等它收尾——否则测试结束后这个后台循环还在轮询。
+    this.loginPromise = (async () => {
+      try {
+        const result = await this.qrLogin({
+          store,
+          logger: this.logger,
+          timeoutSeconds,
+          onQr: ({ svg }) => {
+            this.login.qrSvg = svg;
+            this.#stateChanged();
+          },
+          onWait: ({ status }) => {
+            if (status === this.login.status) return;
+            this.login.status = status;
+            this.#stateChanged();
+          },
+        });
+
+        if (!result.ok) {
+          this.session = 'invalid';
+          this.lastError = `登录没有拿到 ${result.missing.join('、')}，原有的登录态未被改动`;
+          this.logger.error(this.lastError, 'web');
+          return;
+        }
+
         this.session = 'valid';
-        // 会话有效 ≠ cookie 文件存在。http 模式的监控只认那个文件，所以这条提前返回
-        // 也必须导出，否则界面会一直停在「会话已失效 / 还没导出 cookie 文件」。
-        await this.#exportCookieFile(browser);
-        // 没有开始新流程时必须说清楚：`active:false` 供程序判断，`error`/`message` 供界面显示文案。
-        const notice = '当前会话仍然有效，无需重新登录';
-        return { ok: true, active: false, error: notice, message: notice };
-      }
-      if (existing === 'invalid') await browser.clearSession();
-
-      this.login.active = true;
-      this.login.qrUrl = '/api/login-qr.png';
-      this.#stateChanged();
-      this.logger.info('已开始扫码登录，二维码每 5 秒刷新', 'web');
-
-      const qrPath = this.qrPath;
-      const deadline = Date.now() + timeoutSeconds * 1000;
-      const poll = async () => {
-        let lastShotAt = 0;
-        await browser.openForLogin();
-        while (this.login.active && Date.now() < deadline) {
-          if (await browser.isLoggedIn()) break;
-          if (Date.now() - lastShotAt >= 5000) {
-            await browser.screenshotTo(qrPath).catch(() => {});
-            lastShotAt = Date.now();
-          }
-          await sleep(2000);
-        }
-        // Cookie 出现不等于会话有效，必须等服务端确认。
-        let session = 'unknown';
-        for (let attempt = 0; attempt < 3 && session !== 'valid'; attempt += 1) {
-          await sleep(3000);
-          session = await browser.checkSession();
-        }
-        this.session = session;
-        if (session === 'valid') await this.#exportCookieFile(browser);
-        this.login.active = false;
-        this.logger.info(
-          session === 'valid' ? '扫码登录成功' : `扫码登录未完成（会话状态：${session}）`,
-          'web',
-        );
+        this.lastError = null;
+        this.logger.info(`扫码登录成功，已写入 ${result.cookies} 个 cookie`, 'web');
         // 登录成功就把监控接上：服务生命周期归进程，页面上没有「启动」按钮，
-        // 不在这里自动拉起的话，启动时会话失效的用户扫码后就一直停在「没在跑」。
-        if (session === 'valid' && !this.running && !this.starting) {
+        // 不在这里自动拉起的话，启动时会话失效的用户扫码后会一直停在「没在跑」。
+        if (!this.running && !this.starting) {
           await this.start().catch((error) => this.logger.warn(`登录后自动启动失败：${error.message}`, 'web'));
         }
-        this.#stateChanged();
-      };
-      poll().catch((error) => {
-        this.login.active = false;
+      } catch (error) {
         this.lastError = error.message;
         this.logger.error(`扫码登录失败：${error.message}`, 'web');
+      } finally {
+        this.login.active = false;
+        this.login.status = null;
+        this.login.qrSvg = null;
         this.#stateChanged();
-      });
-      return { ok: true };
-    } catch (error) {
-      this.login.active = false;
-      this.lastError = error.message;
-      return { ok: false, error: error.message };
-    }
-  }
+      }
+    })();
 
-  /** @returns {string} 二维码图片的绝对路径。 */
-  get qrPath() {
-    return path.join(path.dirname(this.config.storage.stateFile), 'login-qr.png');
+    return { ok: true, active: true };
   }
 
   /**
@@ -828,7 +754,7 @@ export class Supervisor {
   /**
    * 取得去重表 + 累计计数，必要时读盘。
    *
-   * 不能只在 `start()` 里创建：监控没跑起来（会话失效、浏览器起不来）时界面照样要显示
+   * 不能只在 `start()` 里创建：监控没跑起来（会话失效等）时界面照样要显示
    * 累计计数和已记录条数，那时候 store 若是 null，卡片就会显示全 0，而状态文件里明明有数。
    *
    * @returns {import('./store.mjs').SeenStore} 去重表实例。
@@ -869,20 +795,15 @@ export class Supervisor {
     this.startRetryTimer = null;
   }
 
-  /** 按新的配置文件重新加载进程级配置（浏览器、存储路径等）。 */
+  /** 按新的配置文件重新加载进程级配置（存储路径、cookie 文件位置等）。 */
   async reloadConfig() {
     const { loadConfig } = await import('./config.mjs');
     const { config } = await loadConfig(this.configPath);
     const resolved = withDefaults(config);
-    if (!path.isAbsolute(resolved.browser.userDataDir)) {
-      resolved.browser.userDataDir = path.resolve(this.configDir, resolved.browser.userDataDir);
-    }
     if (!path.isAbsolute(resolved.storage.stateFile)) {
       resolved.storage.stateFile = path.resolve(this.configDir, resolved.storage.stateFile);
     }
-    resolved.browser.linkTemplate = resolved.linkTemplate;
     this.config = resolved;
-    if (this.browser) this.browser.config = resolved.browser;
     // Monitor 持有 config 的引用，换了对象要同步过去。
     if (this.monitor) this.monitor.config = resolved;
     return { ok: true };

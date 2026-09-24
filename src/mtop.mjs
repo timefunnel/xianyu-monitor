@@ -31,6 +31,9 @@ export const MTOP = {
   spm: 'a21ybx.undefined.0.0',
 };
 
+/** 站点地址：只用来拼 referer / origin 这类请求头（以前从 browser.baseUrl 取）。 */
+const SITE_BASE = 'https://www.goofish.com';
+
 /** mtop 的 sign 只认 `_m_h5_tk` 里第一个 `_` 之前的那一段。 */
 const TOKEN_COOKIE = '_m_h5_tk';
 
@@ -234,8 +237,8 @@ export class MtopSearcher {
       headers: {
         'content-type': 'application/x-www-form-urlencoded',
         'user-agent': USER_AGENT,
-        referer: `${this.config.browser?.baseUrl ?? 'https://www.goofish.com'}/`,
-        origin: this.config.browser?.baseUrl ?? 'https://www.goofish.com',
+        referer: `${SITE_BASE}/`,
+        origin: SITE_BASE,
         cookie: FileCookieStore.header(jar),
       },
       body: `data=${encodeURIComponent(data)}`,
@@ -310,8 +313,7 @@ export class MtopSearcher {
       if (jar.size === 0) {
         const error = new Error(
           `没有任何 cookie（${this.cookies.file ?? 'cookie 来源'} 不存在或为空）。` +
-            '请先执行 node src/cli.mjs export-cookies（把 profile 里现有的登录态落盘），' +
-            '或 node src/cli.mjs login 扫码登录。',
+            '请先执行 node src/cli.mjs login 扫码登录（二维码会打在终端里）。',
         );
         error.code = 'auth';
         throw error;
@@ -334,7 +336,7 @@ export class MtopSearcher {
       const verdict = classifyResponse(payload);
 
       if (verdict.kind === 'success') {
-        const linkTemplate = this.config.linkTemplate ?? this.config.browser?.linkTemplate ?? 'https://www.goofish.com/item?id={id}';
+        const linkTemplate = this.config.linkTemplate ?? 'https://www.goofish.com/item?id={id}';
         return { items: extractItems(payload, { linkTemplate }), source: 'api', raw: [payload], requests };
       }
 
@@ -450,19 +452,12 @@ export class MtopSearcher {
 }
 
 /**
- * 按配置挑一个「谁去搜」。
+ * 造一个「谁去搜」：文件版 cookie + 直连 mtop，每轮恰好 1 次请求，不需要浏览器。
  *
- * - `http`（默认）：文件版 cookie + 直连 mtop，每轮恰好 1 次请求，**监控侧不需要浏览器**。
- * - `browser`：退回驱动页面那套（能拿到服务端对筛选的真实确认，代价是冷启动 4~6 次请求）。
- *
- * @param {{config: any, logger: any, browser?: any}} options 依赖；browser 只有 browser 模式才用得到。
+ * @param {{config: any, logger: any}} options 依赖。
  * @returns {Promise<any>} 带 `search(task)` 与 `checkSession()` 的对象。
  */
-export async function createSearcher({ config, logger, browser }) {
-  if (config.search?.mode === 'browser') {
-    if (!browser) throw new Error('search.mode 为 "browser" 时必须传入浏览器。');
-    return browser;
-  }
+export async function createSearcher({ config, logger }) {
   const file = config.search?.cookieFile ?? defaultCookieFile(config);
   return new MtopSearcher({ config, logger, cookies: new FileCookieStore({ file, logger }) });
 }

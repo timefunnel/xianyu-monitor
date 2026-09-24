@@ -11,10 +11,10 @@ import { SeenStore } from '../src/store.mjs';
 function makeConfig(overrides = {}) {
   const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-sup-'));
   const config = withDefaults({
-    // 这个文件一律走浏览器模式：里面的浏览器都是假的，只实现 search()/checkSession()，
-    // 提供不了 cookies()——而直连模式正好要求它。这不只是省事：直连模式的请求要真的发出去，
-    // 单测绝不该有那个机会，所以宁可在这里钉死。
-    search: { mode: 'browser' },
+    // 单测**绝不能有机会发真实请求**，靠两条保证：
+    //   1. 这里不创建 cookie 文件——直连搜索器没有 cookie 时会直接返回 invalid / 抛 auth，
+    //      一个请求都不发（见 mtop.mjs 与 mtop.test.mjs 的「没有 cookie」用例）；
+    //   2. 需要搜索器的地方一律注入假的（createSearcher），登录流程也要注入 qrLogin。
     notify: { channels: [{ type: 'webhook', url: 'https://example.invalid/hook' }] },
     tasks: [{ name: 't', keyword: '显示器', intervalSeconds: 180, filters: { maxPrice: 700 } }],
     ...overrides,
@@ -469,7 +469,7 @@ test('累计计数为空时按命中历史回填（否则会出现「已推送 0
     config,
     configPath: path.join(dir, 'config.json'),
     logger: silentLogger,
-    createBrowser: async () => fakeBrowser([]),
+    createSearcher: async () => fakeBrowser([]),
   });
   try {
     await supervisor.start();
@@ -503,7 +503,7 @@ test('回填是单调取大：历史比计数多就补齐，但不会把已有�
     config,
     configPath: path.join(dir, 'config.json'),
     logger: silentLogger,
-    createBrowser: async () => fakeBrowser([]),
+    createSearcher: async () => fakeBrowser([]),
   });
   try {
     await supervisor.start();
@@ -535,7 +535,7 @@ test('静默期间记的账不算已推送', async () => {
     config,
     configPath: path.join(dir, 'config.json'),
     logger: silentLogger,
-    createBrowser: async () => fakeBrowser([]),
+    createSearcher: async () => fakeBrowser([]),
   });
   try {
     await supervisor.start();
@@ -559,7 +559,7 @@ test('check 同时返回命中项与被过滤项，被过滤项带原因', async
     config,
     configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
     logger: silentLogger,
-    createBrowser: async () => browser,
+    createSearcher: async () => browser,
   });
 
   const result = await supervisor.check();
@@ -588,61 +588,91 @@ test('check 标出已经推送过的商品', async () => {
     config,
     configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
     logger: silentLogger,
-    createBrowser: async () => fakeBrowser([sampleItem({ id: '1' })]),
+    createSearcher: async () => fakeBrowser([sampleItem({ id: '1' })]),
   });
 
   const [entry] = (await supervisor.check()).results;
   assert.equal(entry.hits[0].alreadyPushed, true);
 });
 
-test('会话本来就有效时，「重新登录」也必须把登录态导出成 cookie 文件', async () => {
-  // 实测踩到的坑：早退分支不导出的话，profile 里登录态是好的、cookie 文件却永远不存在，
-  // 而 http 模式的监控只认那个文件——界面就一直停在「登录态不可用」，用户还以为白登录了一次。
-  const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-export-'));
+test('「重新登录」起一个纯 HTTP 的二维码会话，成功后把登录态落盘', async () => {
+  // 这条盯的是：登录不再需要浏览器，而且**注入点存在**——默认的 qrLogin 会真的请求
+  // passport.goofish.com，单测必须能把它换掉，否则跑测试就等于在打闲鱼的登录接口。
+  const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-login-'));
   const cookieFile = path.join(dir, 'cookies.json');
-  const config = makeConfig({ search: { mode: 'browser', cookieFile } });
+  const config = makeConfig({ search: { cookieFile } });
+  config.monitor.notifyOnStart = false;
 
-  const exported = [];
-  const browser = {
-    async checkSession() {
-      return 'valid';
-    },
-    async exportCookies(store) {
-      exported.push(store.file);
-      await store.save(new Map([['unb', { name: 'unb', value: '2214928720161', domain: '.goofish.com', path: '/' }]]));
-      return { count: 1, missing: ['cookie2'] };
-    },
-    async close() {},
-  };
+  const seen = [];
   const supervisor = new Supervisor({
     config,
     configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
     logger: silentLogger,
-    createBrowser: async () => browser,
+    createSearcher: async () => fakeBrowser([]),
+    qrLogin: async ({ store, onQr }) => {
+      seen.push(store.file);
+      // 真实现会先给二维码，界面靠 onQr 拿到 SVG
+      onQr({ codeContent: 'https://passport.goofish.com/qrcodeCheck.htm?lgToken=x', svg: '<svg/>', terminal: 'QR' });
+      await store.save(
+        new Map([
+          ['unb', { name: 'unb', value: '2214928720161', domain: '.goofish.com', path: '/' }],
+          ['cookie2', { name: 'cookie2', value: 'c2', domain: '.goofish.com', path: '/' }],
+        ]),
+      );
+      return { ok: true, cookies: 2, missing: [] };
+    },
   });
 
   const result = await supervisor.loginWithQr();
-
   assert.equal(result.ok, true);
-  assert.match(result.message, /无需重新登录/);
-  assert.deepEqual(exported, [cookieFile], '早退分支同样要落盘');
+  assert.equal(result.active, true, 'HTTP 路径是异步开始的，界面靠轮询看进度');
+  assert.equal(supervisor.login.qrUrl, '/api/login-qr.svg', '二维码改由接口以 SVG 提供');
+  await supervisor.loginPromise;
+
+  assert.deepEqual(seen, [cookieFile], '登录态要写进配置里的 cookie 文件');
   assert.equal(existsSync(cookieFile), true, 'cookie 文件必须真的被创建');
-  assert.equal(JSON.parse(readFileSync(cookieFile, 'utf8')).cookies[0].value, '2214928720161');
+  assert.equal(supervisor.session, 'valid');
+  assert.equal(supervisor.snapshot().login.active, false, '流程结束后 active 要归位');
+  assert.equal(supervisor.snapshot().login.qrSvg, null, '二维码用完就清掉，别一直挂在状态里');
 });
 
-test('check 在浏览器失败时返回错误而不是抛出', async () => {
+test('登录失败时不覆盖原有的 cookie 文件，并给出可读的原因', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-login-bad-'));
+  const cookieFile = path.join(dir, 'cookies.json');
+  const config = makeConfig({ search: { cookieFile } });
+  config.monitor.notifyOnStart = false;
+  writeFileSync(cookieFile, JSON.stringify({ version: 1, cookies: [{ name: 'unb', value: 'good' }], refused: [] }), 'utf8');
+  const before = readFileSync(cookieFile, 'utf8');
+
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => fakeBrowser([]),
+    qrLogin: async () => ({ ok: false, cookies: 0, missing: ['unb'] }),
+  });
+
+  await supervisor.loginWithQr();
+  await supervisor.loginPromise;
+
+  assert.equal(readFileSync(cookieFile, 'utf8'), before, '登录没成功就不能动原来那份登录态');
+  assert.match(supervisor.lastError, /unb/, '要说清缺什么');
+  assert.equal(supervisor.snapshot().login.active, false);
+});
+
+test('check 在搜索器起不来时返回错误而不是抛出', async () => {
   const config = makeConfig();
   const supervisor = new Supervisor({
     config,
     configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
     logger: silentLogger,
-    createBrowser: async () => {
-      throw new Error('浏览器起不来');
+    createSearcher: async () => {
+      throw new Error('搜索器起不来');
     },
   });
 
   const result = await supervisor.check();
   assert.equal(result.ok, false);
-  assert.match(result.error, /浏览器起不来/);
-  assert.equal(supervisor.snapshot().lastError, '浏览器起不来');
+  assert.match(result.error, /搜索器起不来/);
+  assert.equal(supervisor.snapshot().lastError, '搜索器起不来');
 });

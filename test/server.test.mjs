@@ -249,9 +249,23 @@ test('推送开关接口：不带 name 是总开关，带 name 是单任务', as
 test('二维码还没生成时返回 404 而不是空图', async () => {
   const console_ = await withConsole(fakeSupervisor());
   try {
-    const response = await fetch(`${console_.base}/api/login-qr.png`);
+    const response = await fetch(`${console_.base}/api/login-qr.svg`);
     assert.equal(response.status, 404);
     assert.match((await response.json()).error, /尚未生成/);
+  } finally {
+    await console_.close();
+  }
+});
+
+test('登录流程给出二维码后，接口以 SVG 返回（不再需要浏览器截图）', async () => {
+  const supervisor = fakeSupervisor();
+  supervisor.login = { active: true, qrUrl: '/api/login-qr.svg', qrSvg: '<svg xmlns="http://www.w3.org/2000/svg"/>', status: 'NEW' };
+  const console_ = await withConsole(supervisor);
+  try {
+    const response = await fetch(`${console_.base}/api/login-qr.svg`);
+    assert.equal(response.status, 200);
+    assert.match(response.headers.get('content-type') ?? '', /image\/svg\+xml/);
+    assert.match(await response.text(), /^<svg/);
   } finally {
     await console_.close();
   }

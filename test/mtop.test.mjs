@@ -24,10 +24,9 @@ const fixture = JSON.parse(readFileSync(path.join(here, 'fixtures', 'search-resp
 const FIXTURE_ITEMS = 4;
 
 const makeConfig = (search = {}, monitor = {}) => ({
-  browser: { baseUrl: 'https://www.goofish.com' },
   storage: { stateFile: path.join(tmpdir(), 'xianyu-mtop-test', 'state.json') },
   linkTemplate: 'https://www.goofish.com/item?id={id}',
-  search: { mode: 'http', timeoutMs: 20000, ...search },
+  search: { timeoutMs: 20000, ...search },
   monitor: { minRequestGapSeconds: 30, ...monitor },
 });
 
@@ -398,7 +397,7 @@ test('一个 cookie 都没有时直接说清怎么办，不把空 cookie 发出�
 
   await assert.rejects(
     () => searcher.search({ name: 't', keyword: 'x' }),
-    (error) => error.code === 'auth' && /export-cookies/.test(error.message),
+    (error) => error.code === 'auth' && /login/.test(error.message),
   );
   assert.equal(calls.length, 0);
   assert.equal(await searcher.checkSession(), 'invalid', '没有 cookie 就是「没登录过」，不该报成判不准');
@@ -422,24 +421,11 @@ test('响应里的 cookie2 也会被吸收并落盘，不只 _m_h5_tk', async ()
   assert.equal(jar.get('_m_h5_tk').value, 'tok2_1700000000003');
 });
 
-test('createSearcher 默认直连；search.mode=browser 时退回浏览器', async () => {
-  const browser = { cookies: async () => [] };
-  assert.ok((await createSearcher({ config: makeConfig(), logger: {}, browser })) instanceof MtopSearcher);
-  assert.equal(await createSearcher({ config: makeConfig({ mode: 'browser' }), logger: {}, browser }), browser);
-});
 
 test('http 模式下一个浏览器都不需要', async () => {
   // 这就是 C 方案的全部意义：监控侧不启浏览器、没有窗口、服务器上也不需要 Xvfb。
   const searcher = await createSearcher({ config: makeConfig(), logger: {} });
   assert.ok(searcher instanceof MtopSearcher);
-});
-
-test('browser 模式必须给出浏览器，不能悄悄退回直连', async () => {
-  // 静默退化比报错危险得多：那会让人以为每轮 1 次请求，实际冷启动仍连发 4~6 次。
-  await assert.rejects(
-    () => createSearcher({ config: makeConfig({ mode: 'browser' }), logger: {} }),
-    /必须传入浏览器/,
-  );
 });
 
 // ---------- 不并发、不短时高频 ----------

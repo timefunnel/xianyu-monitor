@@ -40,20 +40,17 @@ export class Monitor {
    * @param {object} options
    * @param {any} options.config 已补齐默认值的配置。
    * @param {import('./store.mjs').SeenStore} options.store 去重表。
-   * @param {import('./browser.mjs').GoofishBrowser} options.browser 浏览器会话。
+   * @param {any} options.searcher 「谁去搜」：带 `search(task)` 与 `checkSession()` 的对象。
    * @param {any} options.logger 日志器。
    * @param {(operation: () => Promise<any>) => Promise<any>} [options.serialize]
-   *   页面操作队列。Web 控制台在监控运行期间也要用同一个浏览器页面做「立即检查」，
-   *   共用同一个队列才能保证页面操作不会互相插入。
+   *   请求队列。Web 控制台在监控运行期间也要用同一个搜索器做「立即检查」，
+   *   共用同一个队列才能保证请求不会互相插入（全局最小请求间隔也挂在这条链上）。
    * @param {(item: any, task: any) => void} [options.onNotified] 每次推送成功后的回调。
    */
-  constructor({ config, store, browser, searcher, logger, serialize, onNotified }) {
+  constructor({ config, store, searcher, logger, serialize, onNotified }) {
     this.config = config;
     this.store = store;
-    this.browser = browser;
-    // 「谁去搜」和「浏览器」是两件事：直连模式下搜索由 MtopSearcher 完成，浏览器只负责持有
-    // 登录态（每轮 1 次请求）；浏览器模式下两者是同一个对象。旧调用方只传 browser，这里兼容。
-    this.searcher = searcher ?? browser;
+    this.searcher = searcher;
     this.logger = logger;
     this.onNotified = onNotified;
     this.running = false;

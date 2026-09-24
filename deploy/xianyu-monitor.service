@@ -7,11 +7,8 @@ Wants=network-online.target
 Type=simple
 # 按实际路径修改
 WorkingDirectory=/opt/xianyu-monitor
-# 监控本身不启浏览器（http 模式），所以它并不需要图形界面；这里保留 xvfb-run 是为了：
-#   1) 万一你把 search.mode 回退成 browser；
-#   2) 「点开看商品」要在带登录态的浏览器里打开时不会被 DISPLAY 缺失拦住。
-# 想省掉 Xvfb 可以直接把 ExecStart 改成 /usr/bin/node src/cli.mjs run。
-ExecStart=/usr/bin/xvfb-run -a /usr/bin/node src/cli.mjs run
+# 不需要图形界面，也不需要 Xvfb：登录走纯 HTTP（二维码打在终端里），监控不启浏览器。
+ExecStart=/usr/bin/node src/cli.mjs run
 Restart=always
 RestartSec=10
 # 只给必要的写权限：data 目录需要可写，其余只读

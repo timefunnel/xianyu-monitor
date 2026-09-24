@@ -1122,7 +1122,7 @@
     <h3>扫码登录闲鱼</h3>
     <div class="qr-box"><img id="qrImg" alt="闲鱼登录二维码"></div>
     <div class="qr-hint">
-      二维码每 5 秒刷新，请用闲鱼 App 扫码<br>
+     二维码由服务端生成（纯 HTTP，不需要浏览器），请用闲鱼 App 扫码<br>
       <span id="qrNote">扫码后在手机上点击「确认登录」</span><br>
       <span id="loginFlow"></span>
     </div>
@@ -2504,9 +2504,9 @@ let loginSawActive = false;
 let qrTimer = null;
 const QR_REFRESH_MS = 4000;
 
-/** 刷新二维码图片：加时间戳绕过缓存，服务端每 5 秒更新一次图片内容。 */
+/** 刷新二维码：加时间戳绕过缓存。二维码由服务端登录会话生成，一次有效；轮询是为了拿到重新开始的会话。 */
 function refreshQr() {
-  const qrUrl = (lastState && lastState.login && lastState.login.qrUrl) || '/api/login-qr.png';
+  const qrUrl = (lastState && lastState.login && lastState.login.qrUrl) || '/api/login-qr.svg';
   const img = $('qrImg');
   img.src = qrUrl + '?t=' + Date.now();
 }
@@ -2520,7 +2520,7 @@ function updateLoginFlow(state) {
   }
   if (state && state.login && state.login.active) {
     loginSawActive = true;
-    box.textContent = '登录流程进行中：二维码正在自动刷新';
+    box.textContent = '登录流程进行中：请用闲鱼 App 扫描二维码';
     return;
   }
   if (loginBaseline === 'valid') {

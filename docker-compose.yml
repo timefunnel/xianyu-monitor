@@ -25,7 +25,7 @@ services:
     # command: ["node", "src/cli.mjs", "web", "--no-open"]
 
 # 常用操作：
-#   首次登录（把二维码截图写到 ./data/login-qr.png，用闲鱼 App 扫码）：
+#   首次登录（二维码直接打在容器终端里，用闲鱼 App 扫屏幕）：
 #     docker compose run --rm xianyu-monitor node src/cli.mjs login
 #   校验配置：
 #     docker compose run --rm xianyu-monitor node src/cli.mjs check

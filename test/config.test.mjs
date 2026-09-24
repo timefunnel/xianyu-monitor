@@ -84,7 +84,6 @@ test('withDefaults 补齐缺省值且不覆盖显式配置', () => {
   assert.equal(resolved.monitor.onUnknownField, 'pass');
   assert.equal(resolved.monitor.failureAlertThreshold, 3);
   assert.equal(resolved.notify.maxPerCycle, 8);
-  assert.equal(resolved.browser.headless, false, '闲鱼会识别无头浏览器，默认必须有头');
   assert.equal(resolved.linkTemplate, 'https://www.goofish.com/item?id={id}');
   assert.equal(resolved.tasks[0].enabled, true, '未写 enabled 视为启用');
   assert.equal(resolved.tasks[0].scrollRounds, 0);

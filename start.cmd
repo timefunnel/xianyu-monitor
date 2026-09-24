@@ -14,7 +14,7 @@ if errorlevel 1 (
   exit /b 1
 )
 
-if not exist "node_modules\playwright" (
+if not exist "node_modules\qrcode-generator" (
   echo   首次运行，正在安装依赖，请稍候...
   call npm install --no-audit --no-fund
   if errorlevel 1 (

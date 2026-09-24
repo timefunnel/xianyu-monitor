@@ -1,17 +1,5 @@
 {
-  "browser": {
-    "baseUrl": "https://www.goofish.com",
-    "userDataDir": "./data/browser-profile",
-    "headless": false,
-    "locale": "zh-CN",
-    "timezoneId": "Asia/Shanghai",
-    "channel": "",
-    "executablePath": "",
-    "navigationTimeoutMs": 30000,
-    "responseTimeoutMs": 20000
-  },
   "search": {
-    "mode": "http",
     "timeoutMs": 20000,
     "riskCookies": "omit"
   },

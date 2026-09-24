@@ -129,11 +129,6 @@ export function validateConfig(config) {
     });
   }
 
-  const browser = config.browser ?? {};
-  for (const key of ['channel', 'executablePath']) {
-    if (key in browser && typeof browser[key] !== 'string') problems.push(`browser.${key} 必须是字符串`);
-  }
-
   const monitor = config.monitor ?? {};  if ('onUnknownField' in monitor && !['pass', 'reject'].includes(monitor.onUnknownField)) {
     problems.push('monitor.onUnknownField 只能是 pass 或 reject');
   }
@@ -202,22 +197,6 @@ export async function loadConfig(configPath) {
 export function withDefaults(config) {
   return {
     ...config,
-    browser: {
-      baseUrl: 'https://www.goofish.com',
-      userDataDir: './data/browser-profile',
-      // 闲鱼会识别无头浏览器并返回「非法访问」页，因此默认必须有头。
-      // 服务器上没有图形界面时用 xvfb-run 提供虚拟显示（见 README）。
-      headless: false,
-      // 置 true 时不再让 Playwright 亲自启动（那会给 Chrome 加 --enable-automation，
-      // 页面里 navigator.webdriver 变成 true），改成自己 spawn 普通 Chrome 再用 CDP 附加。
-      // 撞上 RGV587 + action=deny 时值得切一次试；见 diagnose-risk.mjs。
-      attach: false,
-      locale: 'zh-CN',
-      timezoneId: 'Asia/Shanghai',
-      navigationTimeoutMs: 30000,
-      responseTimeoutMs: 20000,
-      ...config.browser,
-    },
     monitor: {
       maxBackoffSeconds: 300,
       // 两次搜索之间至少隔这么久（跨任务生效）。实测连续 3 次搜索就会被风控拦下；
@@ -232,11 +211,8 @@ export function withDefaults(config) {
       notifyOnStart: true,
       ...config.monitor,
     },
-    // 「谁去搜」。默认直连 mtop：每轮恰好 1 次请求，且不再需要为了搜索驱动页面。
-    // 设成 'browser' 退回驱动页面那套：能拿到服务端对筛选的真实确认，但冷启动会连发
-    // 4~6 次请求（实测「短时间内连续 3 次搜索」就触发 RGV587），见 README。
+    // 搜索：直连 mtop，每轮恰好 1 次请求（可选的 browser 模式已随 Playwright 一起移除）。
     search: {
-      mode: 'http',
       timeoutMs: 20000,
       // 风控状态 cookie（sgcookie）怎么处理：
       //  - 'omit'（默认）：一律不发。实测这类 cookie 只是把平台施加的处罚带过来，不带它请求照常成功，
