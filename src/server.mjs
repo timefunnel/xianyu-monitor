@@ -108,6 +108,17 @@ export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0
       if (!Array.isArray(tasks)) return { status: 400, body: { ok: false, problems: ['tasks 必须是数组'] } };
       return { body: await supervisor.saveTasks(tasks) };
     },
+    // 通知渠道走独立路由而不是整份配置覆盖：界面只改一个段，别处的改动不会被回滚。
+    'PUT /api/notify': async (request) => {
+      const { channels, enabled } = await readJsonBody(request);
+      if (channels !== undefined && !Array.isArray(channels)) {
+        return { status: 400, body: { ok: false, problems: ['channels 必须是数组'] } };
+      }
+      if (enabled !== undefined && typeof enabled !== 'boolean') {
+        return { status: 400, body: { ok: false, problems: ['enabled 必须是布尔值'] } };
+      }
+      return { body: await supervisor.saveNotify({ channels, enabled }) };
+    },
     'POST /api/toggle-task': async (request) => {
       const { name, enabled } = await readJsonBody(request);
       if (typeof name !== 'string' || name === '') return { status: 400, body: { ok: false, error: 'name 必填' } };
@@ -125,7 +136,20 @@ export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0
     // 服务生命周期不在这里控制：监控随进程启动、随进程退出。
     // 页面能打开就说明服务在跑，所以没有 start / stop / restart 这类接口。
     'POST /api/check': () => supervisor.check(),
-    'POST /api/test-notify': () => supervisor.testNotify(),
+    // 传 channel 就只测那一条（可以是界面上还没保存的配置），不传则测配置里所有渠道。
+    'POST /api/test-notify': async (request) => {
+      const { channel } = await readJsonBody(request);
+      if (channel !== undefined && (typeof channel !== 'object' || channel === null)) {
+        return { status: 400, body: { ok: false, error: 'channel 必须是对象' } };
+      }
+      return { body: await supervisor.testNotify(channel) };
+    },
+    // 手动重推一条命中记录：翻历史时看到还不错的，不必再去手机通知里翻。
+    'POST /api/repush': async (request) => {
+      const { id } = await readJsonBody(request);
+      if (typeof id !== 'string' || id === '') return { status: 400, body: { ok: false, error: 'id 必填' } };
+      return { body: await supervisor.repushHit(id) };
+    },
     'POST /api/login': () => supervisor.loginWithQr(),
     // 在监控那个已登录的浏览器窗口里打开商品页（桌面浏览器自己开是未登录的）
     'POST /api/open-item': async (request) => {

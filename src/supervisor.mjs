@@ -12,7 +12,7 @@ import { withDefaults } from './config.mjs';
 import { describeFilters, evaluate } from './rules.mjs';
 import { SeenStore } from './store.mjs';
 import { Monitor } from './monitor.mjs';
-import { sendAll } from './notify.mjs';
+import { CHANNEL_SCHEMA, formatItem, sendAll, validateChannels } from './notify.mjs';
 
 /** 命中历史最多保留多少条。 */
 const MAX_HISTORY = 200;
@@ -229,6 +229,8 @@ export class Supervisor {
       lastError: this.lastError,
       hits: [...this.hits].reverse(),
       login: { ...this.login },
+      // 渠道字段定义一并下发：界面上那张表单就是照它渲染的，服务端与前端不会各写一份而分叉。
+      channelTypes: CHANNEL_SCHEMA,
       // 推送总开关；实际是否推送还要看每个任务自己的 notify（两者是「与」）。
       notifyEnabled: this.config.notify.enabled !== false,
       tasks: this.config.tasks.map((task) => {
@@ -469,14 +471,69 @@ export class Supervisor {
   }
 
   /** 给所有通知渠道发一条测试消息。 */
-  async testNotify() {
+  async testNotify(channel) {
+    // 传了 channel 就只测这一条——而且**可以是界面上还没保存的那份**，
+    // 这样「填完先测、通过再存」才成立；顺带把必填校验也跑一遍，半填的表单能立刻得到反馈。
+    if (channel) {
+      const problems = validateChannels([channel]);
+      if (problems.length > 0) return { ok: false, error: problems.join('；') };
+    }
+    const channels = channel ? [channel] : this.config.notify.channels;
+    if (!Array.isArray(channels) || channels.length === 0) return { ok: false, error: '没有可测试的渠道' };
     try {
       const results = await sendAll(
-        this.config.notify.channels,
+        channels,
         { title: '闲鱼监控测试消息', body: `时间：${new Date().toLocaleString('zh-CN', { hour12: false })}` },
         { timeoutMs: this.config.notify.timeoutMs, logger: this.logger },
       );
       return { ok: results.some((result) => result.ok), results };
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+  }
+
+  /**
+   * 手动重推一条命中记录。
+   *
+   * 用途很实在：翻命中历史时看到一条还不错的，不必再去手机通知里把它翻出来。
+   *
+   * 两个刻意的决定：
+   *  - **不受两级静默开关影响**。静默的含义是"别自动刷屏"，而这是用户明确点的一次按钮；
+   *    再被静默掉只会让人以为点了没反应。
+   *  - 标题加 `[重推]` 前缀，否则收到的人会以为又冒出来一条新货。
+   *
+   * @param {string} id 商品 id。
+   * @returns {Promise<{ok: boolean, results?: object[], error?: string}>} 每个渠道的结果。
+   */
+  async repushHit(id) {
+    const record = [...this.hits].reverse().find((hit) => hit?.id === id);
+    if (!record) return { ok: false, error: '命中历史里没有这条记录（可能已被清理）' };
+
+    const channels = this.config.notify?.channels ?? [];
+    if (channels.length === 0) return { ok: false, error: '没有配置任何通知渠道' };
+
+    // 链接按**当前**任务配置决定（jumpLink 可能是 web）；任务已经被删掉就退回网页链接。
+    const tasks = this.config.tasks ?? [];
+    const task = tasks.find((entry) => entry.name === record.task);
+    const item = {
+      id: record.id,
+      title: record.title,
+      price: record.price,
+      area: record.area,
+      seller: record.seller,
+      url: record.url,
+      appUrl: record.appUrl,
+      // 历史里没存发布时间，重推就如实标成未知，而不是拿 pushedAt 冒充发布时间。
+      publishTime: null,
+    };
+    const formatted = formatItem(item, task ?? { name: record.task, jumpLink: 'web' }, { showTaskName: tasks.length > 1 });
+    const message = { ...formatted, title: `[重推] ${formatted.title}` };
+
+    try {
+      const results = await sendAll(channels, message, { timeoutMs: this.config.notify.timeoutMs, logger: this.logger });
+      const ok = results.some((result) => result.ok);
+      this.logger.info(`手动重推「${record.title}」：${ok ? '已发出' : '全部渠道失败'}`, 'web');
+      return { ok, results };
     } catch (error) {
       return { ok: false, error: error.message };
     }
@@ -665,6 +722,33 @@ export class Supervisor {
       return { ok: false, problems: [`读取配置文件失败：${error.message}`] };
     }
     return this.saveConfig({ ...raw, tasks });
+  }
+
+  /**
+   * 只替换 notify 段（渠道列表 / 总开关）并保存。
+   *
+   * 与 `saveTasks` 同源：从磁盘重读、只动一个键，避免界面手里的副本过期时把别处的改动回滚掉。
+   * 渠道是**热生效**的——`saveConfig` 会把新配置同步给运行中的 Monitor，而 Monitor 每次发送前
+   * 实时读 `config.notify.channels`，所以不需要重启进程。（界面原来那句「通知渠道需重启」是错的，
+   * 真正需要重启的只有 `web.port`、路径这类启动期就固定的配置。）
+   *
+   * @param {{channels?: object[], enabled?: boolean}} patch 要改的部分；不传的键保持原样。
+   * @returns {Promise<{ok: boolean, problems?: string[]}>} 校验结果。
+   */
+  async saveNotify({ channels, enabled } = {}) {
+    if (channels !== undefined && !Array.isArray(channels)) return { ok: false, problems: ['channels 必须是数组'] };
+    if (enabled !== undefined && typeof enabled !== 'boolean') return { ok: false, problems: ['enabled 必须是布尔值'] };
+
+    let raw;
+    try {
+      raw = JSON.parse(readFileSync(this.configPath, 'utf8'));
+    } catch (error) {
+      return { ok: false, problems: [`读取配置文件失败：${error.message}`] };
+    }
+    const notify = { ...(raw.notify ?? {}) };
+    if (channels !== undefined) notify.channels = channels;
+    if (enabled !== undefined) notify.enabled = enabled;
+    return this.saveConfig({ ...raw, notify });
   }
 
   /**

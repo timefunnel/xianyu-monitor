@@ -1051,20 +1051,35 @@
           </div>
         </section>
 
-        <!-- 配置 -->
+        <!-- 配置：通知渠道是结构化编辑；原始 JSON 收进折叠区，它是兜底而不是日常入口 -->
         <section class="route" data-route="config">
           <div class="section">
-            <h2 class="section-title">config.json</h2>
+            <h2 class="section-title">通知渠道</h2>
             <div class="config-body">
-              <div class="config-hint">任务请到「任务」页用结构化表单编辑；这里用于改通知渠道、控制台端口等其它配置。</div>
-              <div class="config-path" id="configPath">配置文件路径读取中…</div>
-              <textarea class="config-area mono" id="configArea" spellcheck="false" placeholder="打开本页后自动读取 /api/config"></textarea>
-              <ol class="problems" id="configProblems" hidden></ol>
+              <div class="config-hint">命中后往哪推。保存后即时生效，不需要重启进程；填完可以先用「测试」发一条。</div>
+              <div class="cards" id="channelList" style="max-height: 236px"></div>
+              <ol class="problems" id="channelProblems" hidden></ol>
               <div class="config-actions">
-                <button class="btn btn-primary" type="button" id="configSave">保存</button>
-                <button class="btn" type="button" id="configReload">重新载入</button>
-                <span class="muted" style="font-size:12.5px">任务类改动即时生效；通知渠道、端口等非任务配置需重启进程</span>
+                <button class="btn" type="button" id="channelAdd">添加渠道</button>
+                <button class="btn btn-primary" type="button" id="channelSave">保存渠道</button>
+                <button class="btn" type="button" id="channelTestAll">测试全部</button>
+                <span class="muted" style="font-size:12.5px">商品推送的总开关在右上角</span>
               </div>
+            </div>
+          </div>
+          <div class="section">
+            <h2 class="section-title">原始配置</h2>
+            <div class="config-body">
+              <details>
+                <summary class="config-hint" style="cursor:pointer">展开编辑 config.json 原文（端口、路径这类启动期配置；改了需要重启进程）</summary>
+                <div class="config-path" id="configPath">配置文件路径读取中…</div>
+                <textarea class="config-area mono" id="configArea" spellcheck="false" placeholder="打开本页后自动读取 /api/config"></textarea>
+                <ol class="problems" id="configProblems" hidden></ol>
+                <div class="config-actions">
+                  <button class="btn btn-primary" type="button" id="configSave">保存</button>
+                  <button class="btn" type="button" id="configReload">重新载入</button>
+                </div>
+              </details>
             </div>
           </div>
         </section>
@@ -1086,6 +1101,33 @@
     </div>
     <div class="modal-actions">
       <button class="btn" type="button" id="loginClose">关闭</button>
+    </div>
+  </div>
+</div>
+
+<!-- 通知渠道编辑弹层（字段由 /api/state 下发的 channelTypes 渲染，保存走 PUT /api/notify） -->
+<div class="mask" id="channelMask" hidden>
+  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="channelTitle">
+    <div class="modal-head">
+      <h3 id="channelTitle">添加通知渠道</h3>
+      <button class="modal-close" type="button" id="channelX" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
+    </div>
+    <div class="modal-note" id="channelNote">填完可以先点「测试这条」发一条，通过再保存。</div>
+    <ol class="problems" id="channelFormProblems" hidden></ol>
+
+    <div class="form-group">
+      <div class="field wide">
+        <label class="field-label" for="channelType">渠道类型 <span class="req">*</span></label>
+        <select class="input" id="channelType"></select>
+        <div class="hint" id="channelTypeHint"></div>
+      </div>
+      <div id="channelFields"></div>
+    </div>
+
+    <div class="modal-foot">
+      <button class="btn" type="button" id="channelFormCancel">取消</button>
+      <button class="btn" type="button" id="channelFormTest">测试这条</button>
+      <button class="btn btn-primary" type="button" id="channelFormSave">确定</button>
     </div>
   </div>
 </div>
@@ -1631,6 +1673,19 @@ function createItemRow(item, options) {
   const appLink = item.appUrl || '';
   const preferApp = IS_MOBILE && Boolean(appLink);
   const primary = preferApp ? appLink : webLink || appLink;
+
+  // 手动重推：翻历史时看到还不错的，不必再去手机通知里把它翻出来。
+  // 必须吃掉 click，否则会连带触发整行的「打开商品」。
+  if (item.id) {
+    const repush = el('button', 'btn btn-mini', '重推');
+    repush.type = 'button';
+    repush.title = '把这条再推到通知渠道（不受静默开关影响）';
+    repush.addEventListener('click', (event) => {
+      event.stopPropagation();
+      repushHit(item, repush);
+    });
+    row.appendChild(repush);
+  }
 
   const openMark = el('div', 'hit-open', preferApp ? '用 App 打开' : '打开');
   openMark.innerHTML += ICONS.open;
@@ -2362,6 +2417,28 @@ function renderCheckResults(results) {
   }
 }
 
+/**
+ * 把逐渠道的测试结果渲染到「操作结果」区。
+ * @param {object[]} list 服务端返回的 results。
+ * @returns {number} 成功个数。
+ */
+function renderNotifyResults(list) {
+  $('resultSection').hidden = false;
+  const box = $('notifyResult');
+  box.textContent = '';
+  const wrap = el('div', 'notify-list');
+  let okCount = 0;
+  for (const item of list) {
+    const ok = !!item.ok;
+    if (ok) okCount += 1;
+    const row = el('div', 'notify-row ' + (ok ? 'ok' : 'err'));
+    row.textContent = (item.type || '未知渠道') + (ok ? '：发送成功' : '：发送失败' + (item.error ? ' — ' + item.error : ''));
+    wrap.appendChild(row);
+  }
+  box.appendChild(wrap);
+  return okCount;
+}
+
 async function runCheck() {
   const btn = $('checkBtn');
   setBusy(btn, true, '检查中…');
@@ -2389,19 +2466,7 @@ async function runTestNotify() {
     const list = Array.isArray(result.results) ? result.results : [];
     // 全部渠道失败时服务端也会返回 ok:false，但逐条结果仍然要看得到。
     if (list.length === 0) throw new Error(result.error || '测试通知失败');
-    const box = $('notifyResult');
-    box.textContent = '';
-    const wrap = el('div', 'notify-list');
-    let okCount = 0;
-    for (const item of list) {
-      const ok = !!item.ok;
-      if (ok) okCount += 1;
-      const row = el('div', 'notify-row ' + (ok ? 'ok' : 'err'));
-      row.textContent = (item.type || '未知渠道') + (ok ? '：发送成功' : '：发送失败' + (item.error ? ' — ' + item.error : ''));
-      wrap.appendChild(row);
-    }
-    box.appendChild(wrap);
-
+    const okCount = renderNotifyResults(list);
     if (okCount === list.length) showToast('ok', '通知测试全部成功（' + okCount + ' 个渠道）');
     else showToast('err', '通知测试失败：' + okCount + '/' + list.length + ' 个渠道成功，原因见下方结果');
   } catch (error) {
@@ -2623,11 +2688,252 @@ async function loadConfig() {
     area.value = JSON.stringify(data.config === undefined ? {} : data.config, null, 2);
     configDirty = false;
     $('configProblems').hidden = true;
+    // 通知渠道也从这份配置里取；字段定义只取一次（它是服务端的静态表）。
+    const cfg = data.config && typeof data.config === 'object' ? data.config : {};
+    configChannels = Array.isArray(cfg.notify && cfg.notify.channels) ? cfg.notify.channels.slice() : [];
+    if (channelTypes.length === 0) {
+      const state = await api('/api/state');
+      channelTypes = Array.isArray(state.channelTypes) ? state.channelTypes : [];
+    }
+    renderChannels();
   } catch (error) {
     showError(error);
     $('configPath').textContent = '配置文件读取失败';
   } finally {
     setBusy(save, false, '保存');
+  }
+}
+
+/* ==========================================================================
+   通知渠道：字段定义由服务端 /api/state 的 channelTypes 下发，表单照它渲染。
+   这样「界面能填的」和「服务端认的」不会各写一份而分叉。
+   ========================================================================== */
+
+/** 服务端下发的渠道字段定义。 */
+let channelTypes = [];
+/** 磁盘上的渠道列表；编辑弹层的改动先落到这里，点「保存渠道」才写盘。 */
+let configChannels = [];
+/** 正在编辑的渠道下标；-1 表示新增。 */
+let editingChannel = -1;
+/** 编辑弹层里的草稿渠道对象。 */
+let channelDraft = null;
+
+const channelSchemaOf = (type) => channelTypes.find((entry) => entry.type === type) || null;
+
+/** 密钥只露头尾几位：够确认"填的是哪一个"，又不至于整串摆在屏幕上。 */
+function maskSecret(value) {
+  const text = String(value === undefined || value === null ? '' : value);
+  if (text === '') return '未填';
+  if (text.length <= 8) return '已填（' + text.length + ' 字符）';
+  return text.slice(0, 4) + '…' + text.slice(-2);
+}
+
+function renderChannels() {
+  const box = $('channelList');
+  box.textContent = '';
+  if (configChannels.length === 0) {
+    box.appendChild(el('div', 'empty', '还没有通知渠道，点下面的「添加渠道」加一个'));
+    return;
+  }
+  configChannels.forEach((channel, index) => {
+    const schema = channelSchemaOf(channel.type);
+    const card = el('div', 'card');
+    const head = el('div', 'card-head');
+    const ident = el('div', 'card-ident');
+    ident.appendChild(el('div', 'task-keyword', schema ? schema.label : channel.type));
+    const summary = schema
+      ? schema.fields
+          .filter((field) => channel[field.key] !== undefined && channel[field.key] !== '')
+          .map((field) => field.label + '：' + (field.secret ? maskSecret(channel[field.key]) : String(channel[field.key])))
+          .join(' · ')
+      : '未知类型——服务端不会给它发消息';
+    ident.appendChild(el('div', 'task-interval', summary || '（还没填字段）'));
+    head.appendChild(ident);
+
+    const controls = el('div', 'card-controls');
+    const test = el('button', 'btn btn-mini', '测试');
+    test.type = 'button';
+    test.title = '给这个渠道发一条测试消息（用当前填的内容，没保存也能测）';
+    test.addEventListener('click', () => testChannel(channel, test));
+    const edit = el('button', 'btn btn-mini', '编辑');
+    edit.type = 'button';
+    edit.addEventListener('click', () => openChannelEditor(index));
+    controls.appendChild(test);
+    controls.appendChild(edit);
+    // 删除只删草稿，写盘统一由「保存渠道」负责——和上面那张配置表单同一套语义。
+    const remove = el('button', 'btn btn-mini', '删除');
+    remove.type = 'button';
+    remove.addEventListener('click', () => {
+      configChannels.splice(index, 1);
+      renderChannels();
+      showToast('info', '已从列表移除，点「保存渠道」才会写进配置');
+    });
+    controls.appendChild(remove);
+    head.appendChild(controls);
+    card.appendChild(head);
+    box.appendChild(card);
+  });
+}
+
+function renderChannelFields() {
+  const schema = channelSchemaOf(channelDraft.type);
+  $('channelTypeHint').textContent = schema ? schema.hint || '' : '';
+  const box = $('channelFields');
+  box.textContent = '';
+  if (!schema) return;
+  for (const field of schema.fields) {
+    const wrap = el('div', 'field wide');
+    const id = 'cf-' + field.key;
+    const label = el('label', 'field-label', field.label);
+    label.setAttribute('for', id);
+    if (field.required) label.appendChild(el('span', 'req', ' *'));
+    wrap.appendChild(label);
+
+    const multiline = field.kind === 'json';
+    const input = multiline ? el('textarea', 'input mono') : el('input', 'input');
+    if (multiline) input.rows = 2;
+    else {
+      input.type = field.secret ? 'password' : 'text';
+      input.autocomplete = 'off';
+      input.spellcheck = false;
+    }
+    input.id = id;
+    if (field.placeholder) input.placeholder = field.placeholder;
+    const current = channelDraft[field.key];
+    input.value = current === undefined || current === null ? '' : typeof current === 'object' ? JSON.stringify(current) : String(current);
+    input.addEventListener('input', () => setChannelField(field, input.value));
+    wrap.appendChild(input);
+    box.appendChild(wrap);
+  }
+}
+
+/** 把输入框的值写回草稿。空值直接删键，避免在配置里留一堆空字符串。 */
+function setChannelField(field, raw) {
+  const text = String(raw).trim();
+  if (text === '') {
+    delete channelDraft[field.key];
+    return;
+  }
+  if (field.kind !== 'json') {
+    channelDraft[field.key] = text;
+    return;
+  }
+  try {
+    channelDraft[field.key] = JSON.parse(text);
+  } catch {
+    // 填到一半的 JSON：先原样留着，保存/测试时由服务端校验给出人话。
+    channelDraft[field.key] = text;
+  }
+}
+
+function openChannelEditor(index) {
+  editingChannel = index;
+  const existing = index >= 0 ? configChannels[index] : null;
+  channelDraft = existing ? JSON.parse(JSON.stringify(existing)) : { type: (channelTypes[0] || {}).type || 'webhook' };
+  $('channelTitle').textContent = existing ? '编辑通知渠道' : '添加通知渠道';
+  $('channelFormProblems').hidden = true;
+
+  const select = $('channelType');
+  select.textContent = '';
+  for (const entry of channelTypes) {
+    const option = el('option', null, entry.label);
+    option.value = entry.type;
+    select.appendChild(option);
+  }
+  select.value = channelDraft.type;
+  renderChannelFields();
+  $('channelMask').hidden = false;
+  const first = $('channelFields').querySelector('input, textarea');
+  if (first) first.focus();
+}
+
+function closeChannelEditor() {
+  $('channelMask').hidden = true;
+  channelDraft = null;
+  editingChannel = -1;
+}
+
+function showChannelProblems(box, problems) {
+  const list = Array.isArray(problems) ? problems : [String(problems)];
+  box.textContent = '';
+  for (const problem of list) box.appendChild(el('li', null, problem));
+  box.hidden = false;
+}
+
+/** 只测一条渠道；传的是当前草稿，所以没保存也能先试。 */
+async function testChannel(channel, btn) {
+  if (btn) setBusy(btn, true, '测试中…');
+  try {
+    const result = await api('/api/test-notify', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channel }),
+    });
+    if (result && result.ok === false && !Array.isArray(result.results)) throw new Error(result.error || '测试失败');
+    const list = Array.isArray(result.results) ? result.results : [];
+    const okCount = renderNotifyResults(list);
+    if (okCount === list.length && list.length > 0) showToast('ok', '这个渠道发送成功');
+    else showToast('err', '这个渠道发送失败，原因见下方结果');
+  } catch (error) {
+    showError(error);
+  } finally {
+    if (btn) setBusy(btn, false, '测试');
+  }
+}
+
+async function saveChannels() {
+  const btn = $('channelSave');
+  setBusy(btn, true, '保存中…');
+  try {
+    const result = await api('/api/notify', {
+      method: 'PUT',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ channels: configChannels }),
+    });
+    if (result && result.ok === false) {
+      const problems = Array.isArray(result.problems) && result.problems.length ? result.problems : ['服务端未给出具体原因'];
+      showChannelProblems($('channelProblems'), problems);
+      showToast('err', '渠道未保存');
+      return;
+    }
+    $('channelProblems').hidden = true;
+    showToast('ok', '通知渠道已保存，即时生效');
+    // 原始 JSON 那份没有未保存的改动时同步过来，免得两处显示不一致。
+    if (!configDirty) await loadConfig();
+  } catch (error) {
+    if (error && error.problems) showChannelProblems($('channelProblems'), error.problems);
+    showError(error);
+  } finally {
+    setBusy(btn, false, '保存渠道');
+  }
+}
+
+function commitChannel() {
+  if (!channelDraft) return;
+  if (editingChannel >= 0) configChannels[editingChannel] = channelDraft;
+  else configChannels.push(channelDraft);
+  renderChannels();
+  closeChannelEditor();
+  showToast('ok', '已加入列表，点「保存渠道」写入配置');
+}
+
+/** 手动重推一条命中记录：翻历史时看到还不错的，不必再去手机通知里翻。 */
+async function repushHit(item, btn) {
+  setBusy(btn, true, '推送中…');
+  try {
+    const result = await api('/api/repush', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ id: String(item.id) }),
+    });
+    if (result && result.ok === false) throw new Error(result.error || '重推失败');
+    const failed = (Array.isArray(result.results) ? result.results : []).filter((entry) => !entry.ok);
+    if (failed.length === 0) showToast('ok', '已重新推送这条商品');
+    else showToast('err', '重推部分失败：' + failed.map((entry) => entry.type + (entry.error ? '（' + entry.error + '）' : '')).join('、'));
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(btn, false, '重推');
   }
 }
 
@@ -3415,6 +3721,23 @@ function bindEvents() {
   for (const button of document.querySelectorAll('.nav-item')) {
     button.addEventListener('click', () => switchRoute(button.dataset.route));
   }
+
+  // 通知渠道
+  $('channelAdd').addEventListener('click', () => openChannelEditor(-1));
+  $('channelSave').addEventListener('click', saveChannels);
+  $('channelTestAll').addEventListener('click', runTestNotify);
+  $('channelX').addEventListener('click', closeChannelEditor);
+  $('channelFormCancel').addEventListener('click', closeChannelEditor);
+  $('channelType').addEventListener('change', (event) => {
+    // 换类型等于换一整套字段：同名键（比如 webhook / url）语义不同，不保留旧值。
+    channelDraft = { type: event.target.value };
+    $('channelFormProblems').hidden = true;
+    renderChannelFields();
+  });
+  $('channelFormTest').addEventListener('click', () => {
+    if (channelDraft) testChannel(channelDraft, $('channelFormTest'));
+  });
+  $('channelFormSave').addEventListener('click', commitChannel);
   window.addEventListener('hashchange', () => switchRoute(currentRouteFromHash(), { silent: true }));
 
   // 页面重新可见时立刻刷新一次状态，避免后台标签页数据过期

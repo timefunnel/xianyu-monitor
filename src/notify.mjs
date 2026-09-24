@@ -14,6 +14,110 @@ const BARK_MAX_GET_URL = 1500;
 const MAX_TITLE = 40;
 
 /**
+ * 渠道字段的唯一事实来源：控制台据此渲染表单，校验据此判断必填。
+ *
+ * 放在服务端而不是前端各写一份，是为了避免"界面能填但发不出去"或反过来的分叉——
+ * 界面上那份表单就是从这个表生成的。
+ *
+ * - `required`：缺了就不能保存
+ * - `secret`：界面按密码框处理并脱敏显示
+ * - `options`：枚举字段（目前只有 Bark 的提示音）
+ */
+export const CHANNEL_SCHEMA = [
+  {
+    type: 'telegram',
+    label: 'Telegram',
+    hint: '找 @BotFather 发 /newbot 拿 botToken，再找 @userinfobot 拿 chatId（群聊是负数）',
+    fields: [
+      { key: 'botToken', label: 'Bot Token', required: true, secret: true, placeholder: '123456:ABC-DEF…' },
+      { key: 'chatId', label: 'Chat ID', required: true, placeholder: '123456789' },
+    ],
+  },
+  {
+    type: 'dingtalk',
+    label: '钉钉群机器人',
+    hint: '群 → 群设置 → 智能群助手 → 添加机器人 → 自定义；安全设置选「加签」时把密钥填进 secret',
+    fields: [
+      { key: 'webhook', label: 'Webhook', required: true, secret: true, placeholder: 'https://oapi.dingtalk.com/robot/send?access_token=…' },
+      { key: 'secret', label: '加签密钥（可选）', secret: true, placeholder: 'SEC…' },
+    ],
+  },
+  {
+    type: 'wecom',
+    label: '企业微信群机器人',
+    hint: '群 → 群机器人 → 添加，复制 webhook 地址',
+    fields: [
+      { key: 'webhook', label: 'Webhook', required: true, secret: true, placeholder: 'https://qyapi.weixin.qq.com/cgi-bin/webhook/send?key=…' },
+    ],
+  },
+  {
+    type: 'bark',
+    label: 'Bark（iOS）',
+    hint: 'App 首页那串 key；自建服务把 server 改成自己的地址',
+    fields: [
+      { key: 'key', label: 'Device Key', required: true, secret: true, placeholder: 'abc123…' },
+      { key: 'server', label: '服务器（可选）', placeholder: 'https://api.day.app' },
+      { key: 'sound', label: '提示音（可选）', placeholder: '例如 alarm' },
+    ],
+  },
+  {
+    type: 'serverchan',
+    label: 'Server酱',
+    hint: 'sct.ftqq.com 登录后拿 SendKey（SCT 开头）',
+    fields: [{ key: 'sendKey', label: 'SendKey', required: true, secret: true, placeholder: 'SCT…' }],
+  },
+  {
+    type: 'webhook',
+    label: '自定义 Webhook',
+    hint: '你自己的接收端，会收到 POST JSON：{title, body, url, webUrl, group}',
+    fields: [
+      { key: 'url', label: 'URL', required: true, placeholder: 'https://example.com/hook' },
+      { key: 'headers', label: '额外请求头（可选，JSON）', kind: 'json', placeholder: '{"Authorization":"Bearer …"}' },
+    ],
+  },
+];
+
+/** 按 type 取字段定义；未知类型返回 null。 */
+export const channelSchemaOf = (type) => CHANNEL_SCHEMA.find((entry) => entry.type === type) ?? null;
+
+/**
+ * 校验一组通知渠道。
+ *
+ * 只检查**结构**（类型已知、必填字段非空、类型对）——不校验密钥是否真的有效，
+ * 那要靠「测试」按钮去发一条才知道。
+ *
+ * @param {unknown} channels 渠道数组。
+ * @returns {string[]} 问题列表；空数组表示通过。
+ */
+export function validateChannels(channels) {
+  if (!Array.isArray(channels) || channels.length === 0) return ['notify.channels 必须是非空数组（至少一个通知渠道）'];
+  const problems = [];
+  channels.forEach((channel, index) => {
+    const where = `notify.channels[${index}]`;
+    if (!channel || typeof channel !== 'object' || !channel.type) {
+      problems.push(`${where}.type 必填`);
+      return;
+    }
+    const schema = channelSchemaOf(channel.type);
+    if (!schema) {
+      problems.push(`${where}.type 不支持：${channel.type}（可用：${CHANNEL_SCHEMA.map((entry) => entry.type).join(' / ')}）`);
+      return;
+    }
+    for (const field of schema.fields) {
+      const value = channel[field.key];
+      if (value === undefined || value === null || value === '') {
+        if (field.required) problems.push(`${where}.${field.key} 必填（${schema.label}）`);
+        continue;
+      }
+      if (field.kind === 'json' && typeof value !== 'object') {
+        problems.push(`${where}.${field.key} 必须是对象`);
+      }
+    }
+  });
+  return problems;
+}
+
+/**
  * 把闲鱼的超长标题压成一段可读短句。
  *
  * 标题里往往混着型号、成色、参数、客服话术和免责声明，因此先按句读/括号在第一个

@@ -6,6 +6,7 @@
 import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
+import { validateChannels } from './notify.mjs';
 
 const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
@@ -154,16 +155,9 @@ export function validateConfig(config) {
     problems.push('web.host 对外监听时必须设置 web.token，否则同网段任何人都能启停抓取、改配置');
   }
 
-  const channels = config.notify?.channels;  if (!Array.isArray(channels) || channels.length === 0) {
-    problems.push('notify.channels 必须是非空数组（至少一个通知渠道）');
-  } else {
-    channels.forEach((channel, index) => {
-      const where = `notify.channels[${index}]`;
-      if (!channel || typeof channel !== 'object' || !channel.type) {
-        problems.push(`${where}.type 必填`);
-      }
-    });
-  }
+  // 渠道结构交给 notify.mjs 的同一份 schema 校验：控制台的表单就是从它生成的，
+  // 所以「界面能填」和「能真的发出去」不会分叉。
+  problems.push(...validateChannels(config.notify?.channels));
 
   // 展开后仍残留 ${...} 说明环境变量缺失，这属于配置错误而不是可忽略的默认值。
   const leftovers = JSON.stringify(config).match(ENV_PATTERN);
