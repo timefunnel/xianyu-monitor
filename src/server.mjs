@@ -169,12 +169,6 @@ export async function startWebConsole({ supervisor, port = 7788, host = '127.0.0
       return { body: await supervisor.repushHit(id) };
     },
     'POST /api/login': () => supervisor.loginWithQr(),
-    // 在监控那个已登录的浏览器窗口里打开商品页（桌面浏览器自己开是未登录的）
-    'POST /api/open-item': async (request) => {
-      const { id } = await readJsonBody(request);
-      if (typeof id !== 'string' || id === '') return { status: 400, body: { ok: false, error: 'id 必填' } };
-      return { body: await supervisor.openItem(id) };
-    },
   };
 
   const server = createServer(async (request, response) => {

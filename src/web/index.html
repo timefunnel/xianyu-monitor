@@ -1631,40 +1631,19 @@ function mergeHits(list) {
 /** 命中行要用哪种跳转链接取决于设备：App 深链只有手机上的闲鱼能接。 */
 const IS_MOBILE = /Android|iPhone|iPad|iPod|Windows Phone|Mobile/i.test(navigator.userAgent);
 
-/** 控制台是不是就跑在本机。跑在服务器 / NAS 上时，服务端那个浏览器窗口用户根本看不见。 */
-const IS_LOCAL_CONSOLE = ['localhost', '127.0.0.1', '::1', ''].includes(location.hostname);
-
 /**
- * 打开一条命中。
+ * 打开一条命中：**始终在当前这个浏览器里打开**。
  *
- * 电脑上**且控制台就在本机**时，优先让监控自己那个已登录的浏览器窗口打开商品页：桌面浏览器
- * 直接开闲鱼网页是未登录的，而登录态在监控的 Chrome profile 里，借它的窗口打开才带登录状态。
+ * 以前是「在本机时让服务端那个已登录的浏览器窗口去开」，那个设计是错的：
+ *   - 控制台跑在服务器 / NAS 上时，服务端开的窗口用户根本看不见，点了像没反应；
+ *   - 就算在本机，用你已经开着的浏览器，也比另起一个带 profile 的 Chrome 窗口自然。
  *
- * 但控制台跑在服务器 / NAS 上时不能这么做——那个浏览器开在服务器上，用户屏幕上什么都不会出现，
- * 点了像没反应。所以远端访问一律直接在本机浏览器里打开。
+ * 当初的理由是「桌面浏览器直接开闲鱼网页是未登录的」，但商品页的基本信息本来就公开可见，
+ * 为这点便利搭一条会在服务器上悄悄失效的路径不划算。
  *
- * 手机上直接走原来的逻辑（App 深链）。
- *
- * @param {any} item 命中记录。
  * @param {string} primary 已经按设备选好的链接。
  */
-async function openHit(item, primary) {
-  if (!IS_MOBILE && IS_LOCAL_CONSOLE && item.id) {
-    try {
-      const result = await api('/api/open-item', {
-        method: 'POST',
-        headers: { 'content-type': 'application/json' },
-        body: JSON.stringify({ id: String(item.id) }),
-      });
-      if (result && result.ok) {
-        showToast('ok', '已在已登录的监控窗口里打开该商品', { timeout: 4000 });
-        return;
-      }
-      // 无头运行等情况下服务端会说明原因；仍然给用户一个能点开的链接。
-    } catch (error) {
-      // 接口不可用时静默回退，不要因为跳转失败弹错误。
-    }
-  }
+function openHit(primary) {
   window.open(primary, '_blank', 'noopener');
 }
 
@@ -1731,7 +1710,7 @@ function createItemRow(item, options) {
   row.appendChild(actions);
 
   if (primary) {
-    const open = () => openHit(item, primary);
+    const open = () => openHit(primary);
     row.addEventListener('click', open);
     row.addEventListener('keydown', (event) => {
       if (event.key === 'Enter' || event.key === ' ') {

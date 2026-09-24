@@ -15,9 +15,6 @@ import net from 'node:net';
 import path from 'node:path';
 import { collectSearch } from './search.mjs';
 
-/** 同时保留几个「点开看商品」的标签页，超出的关掉最旧的。 */
-const MAX_ITEM_TABS = 5;
-
 /** 登录后才会出现的 cookie 名，任一存在即视为已登录。 */
 const LOGIN_COOKIE_NAMES = ['unb', '_nk_', 'tracknick'];
 
@@ -353,7 +350,6 @@ export class GoofishBrowser {
         this.logger?.warn('浏览器窗口已关闭，重新拉起', 'browser');
         this.context = null;
         this.taskPages = null;
-        this.itemPages = null;
       }
     }
     await this.open();
@@ -402,38 +398,6 @@ export class GoofishBrowser {
       const fresh = await this.#pageFor(task.name ?? task.keyword);
       fresh.state.warmKey = null;
       return await collectSearch(fresh.page, this.config, task, this.logger, fresh.state);
-    }
-  }
-
-  /**
-   * 在**这个已经登录的浏览器窗口**里新开一个标签打开网页。
-   *
-   * 桌面浏览器直接打开闲鱼网页是未登录状态（登录态在监控自己的 profile 里），所以
-   * 「点一下看商品」要真的带上登录态，只能借这个窗口开。各任务的搜索页不动，不会被顶掉。
-   *
-   * 无头运行时看不到窗口，直接返回失败，让界面回退到自己浏览器里打开。
-   *
-   * @param {string} url 要打开的网址。
-   * @returns {Promise<{ok: boolean, error?: string}>} 结果。
-   */
-  async openItem(url) {
-    if (!this.context) return { ok: false, error: '浏览器还没启动' };
-    if (this.config.headless) {
-      return { ok: false, error: '监控跑在无头模式，看不到新标签页；请在本地浏览器里打开' };
-    }
-    try {
-      const page = await this.context.newPage();
-      await page.goto(url, { waitUntil: 'domcontentloaded', timeout: this.config.navigationTimeoutMs });
-      await page.bringToFront();
-      // 只保留最近几个商品标签，避免一个个点下去把窗口塞满。
-      this.itemPages ??= [];
-      this.itemPages.push(page);
-      while (this.itemPages.length > MAX_ITEM_TABS) {
-        await this.itemPages.shift()?.close().catch(() => {});
-      }
-      return { ok: true };
-    } catch (error) {
-      return { ok: false, error: `打开失败：${error.message}` };
     }
   }
 

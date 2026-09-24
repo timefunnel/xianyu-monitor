@@ -310,7 +310,7 @@ const commands = {
     }
     logger.info(
       httpMode
-        ? `Playwright：${playwright} —— 默认登录（纯 HTTP 终端二维码）与监控都用不到它，只有 --browser 登录 / export-cookies / 点开看商品需要`
+        ? `Playwright：${playwright} —— 默认登录（纯 HTTP 终端二维码）与监控都用不到它，只有 --browser 登录与 export-cookies 需要`
         : `Playwright：${playwright}`,
     );
 

@@ -869,31 +869,6 @@ export class Supervisor {
     this.startRetryTimer = null;
   }
 
-  /**
-   * 在监控自己那个已登录的浏览器窗口里打开某个商品的网页。
-   *
-   * 桌面浏览器直接开闲鱼网页是未登录的（登录态在监控的 profile 里），所以这条路径让
-   * 「点一下看商品」带上登录态。只接受商品 id，网址由 linkTemplate 现拼，避免变成一个
-   * 能被外部用来跳任意地址的接口。
-   *
-   * @param {string} id 商品 id。
-   * @returns {Promise<{ok: boolean, url?: string, error?: string}>} 结果。
-   */
-  async openItem(id) {
-    if (typeof id !== 'string' || !/^\d+$/.test(id)) return { ok: false, error: '商品 id 不合法' };
-    const url = this.config.linkTemplate.replace('{id}', id);
-    // 按需拉起：http 模式下监控不启浏览器，但「点开看商品」仍然要在带登录态的窗口里打开，
-    // 所以这里不能因为 this.browser 为空就拒掉（拉起时会自动灌回 cookie 文件里的登录态）。
-    let browser;
-    try {
-      browser = await this.#ensureBrowser();
-    } catch (error) {
-      return { ok: false, error: `浏览器启动失败：${error.message}` };
-    }
-    const result = await browser.openItem(url);
-    return result.ok ? { ok: true, url } : { ok: false, error: result.error };
-  }
-
   /** 按新的配置文件重新加载进程级配置（浏览器、存储路径等）。 */
   async reloadConfig() {
     const { loadConfig } = await import('./config.mjs');

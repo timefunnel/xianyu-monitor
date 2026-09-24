@@ -62,10 +62,6 @@ const supervisor = {
     calls.push(['repushHit', id]);
     return { ok: true, results: [{ type: 'bark', ok: true }] };
   },
-  openItem: async (id) => {
-    calls.push(['openItem', id]);
-    return { ok: true };
-  },
   loginWithQr: async () => ({ ok: true }),
   setNotify: async () => ({ ok: true }),
   setTaskEnabled: async () => ({ ok: true }),
@@ -83,6 +79,17 @@ const check = (ok, label, detail = '') => {
 
 const browser = await chromium.launch({ channel: 'chrome', headless: true });
 const page = await browser.newPage({ viewport: { width: 1280, height: 800 } });
+// 商品链接现在由**本机浏览器**直接打开（不再走服务端），所以这里必须把外部请求拦掉：
+// 我们要验证的是"点了会开新标签"，而不是真去访问闲鱼。
+const blocked = [];
+await page.context().route('**/*', (route) => {
+  const url = route.request().url();
+  if (url.startsWith(base) || url.startsWith('data:')) return route.continue();
+  // 记下被拦下的地址：请求真的发出去了才说明"点了会打开"，而弹窗本身会变成错误页，
+  // 从它身上读不到目标 URL。
+  blocked.push(url);
+  return route.abort();
+});
 const errors = [];
 page.on('pageerror', (error) => errors.push('pageerror: ' + error.message));
 page.on('console', (message) => {
@@ -153,10 +160,17 @@ try {
   check(/重推/.test(await repushBtn.innerText()), '重推结束后文案复原');
   check((await repushBtn.locator('svg').count()) === 1, '重推结束后图标仍在');
   // 按钮必须吃掉 click，否则会连带触发整行的「打开商品」
+  check(page.context().pages().length === 1, '点「重推」没有连带打开商品页', `${page.context().pages().length} 个标签页`);
+
+  // 反过来：点整行**应该**打开商品（链接走本机浏览器，服务端那条路径已经删掉）
+  await page.locator('#hits .hit').first().click();
+  await page.waitForTimeout(600);
+  const opened = page.context().pages().filter((entry) => entry !== page);
+  check(opened.length === 1, '点整行会打开商品页', `${opened.length} 个新标签页`);
   check(
-    calls.filter((entry) => entry[0] === 'openItem').length === 0,
-    '点「重推」没有连带打开商品页',
-    JSON.stringify(calls.filter((entry) => entry[0] === 'openItem')),
+    blocked.some((url) => /goofish\.com\/item/.test(url)),
+    '打开的是商品链接（请求已拦截，全程没碰闲鱼）',
+    blocked.slice(-1)[0]?.slice(0, 60) ?? '(没有外部请求)',
   );
   await page.screenshot({ path: 'data/console-hits-repush.png' }).catch(() => {});
   // ---- 老进程场景：前端新、服务端旧（/api/state 里没有 channelTypes）----
