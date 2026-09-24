@@ -1,694 +1,264 @@
 # xianyu-monitor
 
-> **仅供学习与个人研究 —— 请不要用主号登录。**
->
-> - 本项目**仅供学习交流**：它的价值在于把「Web 自动化 / 接口协议适配 / 调度与去重 / 风控现象观测」这些问题摊开来讨论，代码和文档里记录了完整的实测过程与踩坑结论。
-> - **请勿使用你的主账号。** 它通过程序自动化访问闲鱼，**违反《闲鱼用户协议》**。平台的处置是有梯度的：先用风控把接口拒掉（本项目开发过程中反复撞到 `RGV587` 与 `action=deny`），再严重就可能限制账号功能甚至封号。**请用小号，并接受该小号可能损失。**
-> - **不要**用于代拍、代抢、批量倒卖等经营行为，也**不要**对外提供服务——那属于经营行为，风险量级完全不同。
-> - **不要**把 `data/` 目录交给任何人、也不要提交到仓库：`data/cookies.json` 就是你的登录凭据（等同账号密码）。仓库的 `.gitignore` 已经把整个 `data/` 挡在外面。
-> - 本项目不代下单、不代支付、不接触任何资金环节；不实现验证码绕过，也不伪造浏览器指纹。
-> - **使用所产生的一切后果由使用者自行承担**，作者不承担任何责任。
+闲鱼关键词监控工具。定时搜索商品，按价格、地区、关键词等条件筛选，并将新命中推送到 Telegram、钉钉、企业微信、Bark、Server酱或自定义 Webhook。
 
-闲鱼关键词监控：按关键词定时搜索，命中你设定的条件（价格、成色关键词、地区、发布时间）后，**秒级推送**到 Telegram / 钉钉 / 企业微信 / Bark / Server酱 / 自定义 webhook，你点开链接去 App 下单。
+> [!WARNING]
+> 本项目仅供学习和个人研究。自动化访问闲鱼可能违反平台用户协议，并可能触发限流、验证、账号限制或封禁。请勿使用主账号，也不要用于代拍、代抢、批量倒卖或对外服务。
 
-设计目标是「不漏掉好货」，因此默认一切花钱的动作都由你自己完成——本工具不代下单、不代支付。
+项目只负责搜索、筛选和提醒，**不会自动下单或支付**。
 
-## 四个必须知道的前置事实
+## 功能
 
-以下都是实测结论，直接决定方案可行性：
+- 纯 HTTP 扫码登录，无需浏览器、Chromium 或 Xvfb
+- 多任务定时监控，支持随机抖动、全局请求间隔和失败退避
+- 支持价格、地区、发布时间、关键词、正则、卖家等筛选条件
+- 已推送商品自动去重，状态保存在本地
+- 支持多种通知渠道和 App / 网页跳转
+- 内置 Web 控制台，可管理任务、查看命中与日志、测试通知
+- 支持 Windows、Linux、NAS、Docker 和 systemd
 
-1. **搜索接口要求登录**。未登录调用 `mtop.taobao.idlemtopsearch.pc.search` 会返回错误码并带上登录页地址，拿不到任何商品。所以必须先扫码登录。
-2. **登录不需要浏览器**。扫码登录走纯 HTTP，二维码用半块字符画在终端里（`node src/cli.mjs login`），手机扫屏幕即可。整个项目不再依赖 Playwright、Chromium 或 Xvfb。
-3. **搜索接口有频率限制，做不到「秒级」**。实测短时间内连续 3 次搜索就返回 `RGV587_ERROR::SM::哎哟喂,被挤爆啦`，冷却约 3 分钟。所以现实节奏是**每个任务 60~120 秒一次**，本工具的定位是「捡漏提醒」而不是「抢拍工具」；被限流时主循环会直接进入最长冷却（默认 300 秒）并告警。
-4. **网页端不能下单**。goofish.com 支持搜索、比价、一键沟通，但下单要回 App。所以本工具的终点是「推送 + 你点链接去 App 下单」。
+## 快速开始
 
-## 它做什么，不做什么
-
-| 做 | 不做 |
-| --- | --- |
-| 定时搜索关键词并按规则筛选 | 不自动下单、不自动支付 |
-| 命中后推送到你的 IM | 不逆向 App 端签名、不伪造客户端接口 |
-| 记录已推送商品，避免重复刷屏 | 不做反检测规避、不多账号并发 |
-
-工作原理：扫码登录走**纯 HTTP**（二维码画在终端里，不启浏览器），登录态存在 `data/cookies.json`。搜索**不经过页面**——拿这份登录态向 `h5api.m.goofish.com` 发一次 mtop 请求，每轮恰好 1 次。接口换参数时只需调整 `src/parse.mjs` 一个文件。
-
-真实接口是 `h5api.m.goofish.com/h5/mtop.taobao.idlemtopsearch.pc.search`；同名前缀的 `.shade`（推荐位）与 `.item.search.activate`（热搜位）不是商品结果，已在采集时排除。
-
-## 图形控制台（推荐日常使用）
-
-不想记命令就用控制台。Windows 双击 `start.cmd`，Linux / NAS 执行 `./start.sh`（首次会自动装依赖），也可以直接：
-
-```bash
-npm run web            # 默认 http://127.0.0.1:7788
-npm run web -- --port 9000 --no-open
-```
-
-它会启动 HTTP 服务并**自动拉起监控**，然后在浏览器里打开。
-
-**服务生命周期归进程，不归页面**：监控随 `npm run web`（或 Docker/systemd）启动、随进程退出，页面上没有启停/重启入口——页面能打开就说明服务在跑。配置里有任务被停用、甚至一个启用的任务都没有时，服务只是**待命**而不会退出，把开关打开就开始抓取。
-
-启动失败会**自愈**：进程起起来时会话已失效是最常见的原因，所以
-
-- 扫码登录成功后**自动拉起监控**，不需要你再点任何东西；
-- 启动失败后每 60 秒自动重试一次（只在「没在跑」时触发，成功即停）；
-- 页面顶部会明确写出「监控当前没有在运行」以及原因，不会让你只看到一句过期报错。
-
-监控没在跑时，卡片上的累计计数和「已记录 N 条」仍然从 `data/state.json` 里读出来照常显示；日志面板在 SSE 连上时会**补发最近的 300 行**（SSE 自己不回溯，否则刷新后永远空白）。
-
-界面按 **app-shell-ui**（App Mode · 控制台型）组织：顶部标题栏放品牌与全局操作，左侧 240px 导航，右侧内容画布按五个路由分屏——**每个路由在 1280×800 下都是一屏，不出现页面级滚动**（长列表用受限的内部滚动区）。
-
-| 路由 | 内容 |
-| --- | --- |
-| 概览 | 统计卡（运行中任务 / 累计轮询 / 扫描 / 命中 / 推送 / 去重）+ 操作结果 + 最近命中 |
-| 任务 | 任务卡片：监控开关、推送开关、三态标签、统计、编辑/复制/删除、新建 |
-| 命中 | 完整命中历史，点任意一条直接跳转商品；每行还有**重推**（把这条再发一次通知，翻历史时看到还不错的不用再去手机里找） |
-| 日志 | 实时日志（SSE 推送，可按级别过滤）|
-| 配置 | **通知渠道的结构化编辑**（选类型 + 按类型填字段 + 单渠道测试）；原始 `config.json` 收在折叠区里，用来改端口、路径这类启动期配置 |
-
-### 按钮速查
-
-**标题栏（右上角）**
-
-| 按钮 | 作用 | 注意 |
-| --- | --- | --- |
-| **立即检查** | 所有启用的任务各跑一轮，**只列出判定结果、不推送** | 调关键词就用它：每条商品都会给出「命中」或「跳过 + 原因」，以及**是否已推送过**——所以「最近怎么没命中」到底是没新货还是规则太严，一眼能分清。http 模式下每个任务占 1 次请求 |
-| **测试通知** | 给所有配好的渠道各发一条测试消息 | 等于 `npm run test:notify`；哪个渠道失败会单独报出来 |
-| **重新登录** | 打开扫码弹层，二维码直接显示在页面里 | 会话仍有效时会直接回「无需重新登录」，并顺手把登录态落盘 |
-| **铃铛图标**（推送总开关） | 一键静默全部商品推送 | 关掉后**照常监控、照常记录命中**，只是不发通知；告警不受影响 |
-| **主题图标** | 切换亮色 / 暗色 | 记住选择；没选过时跟随系统偏好，首屏不闪 |
-
-**左侧导航**：概览 / 任务 / 命中 / 日志 / 配置。
-
-| 位置 | 控件 | 作用 |
-| --- | --- | --- |
-| 任务页 | **新建任务** | 打开任务表单：分「基本」和「高级筛选」两组，保存前做客户端校验（重名、空关键词、价格只填一边、非法正则…），服务端再校验一遍并逐条列出问题 |
-| 任务卡片 | 监控开关 / 推送开关 | 分别控制这个任务**是否抓取**、命中后**是否推送**；与标题栏的总开关是「与」的关系 |
-| 任务卡片 | 编辑 / 复制 / 删除 | 全都**保存即生效**，不需要重启任何东西 |
-| 日志页 | 全部 / 信息 / 警告 / 错误 | 按级别过滤 |
-| 日志页 | **清空** | 只清当前页面里的日志视图，不影响服务端缓冲（刷新后会重新补发最近 300 行） |
-| 日志页 | **回到底部** | 手动往上滚之后自动滚动会停下，点它恢复跟随 |
-| 命中页 | 点一行 | 直接跳转商品（按设备选网页链接或 App 深链） |
-| 命中页 | 行上的 **重推** | 把这条再推到通知渠道。**翻历史时看到还不错的，不用再去手机通知里翻**；它**不受静默开关影响**（那是你明确点的一次），标题会带 `[重推]` 前缀，免得收到的人以为是新货 |
-| 配置页 | **添加渠道 / 保存渠道 / 测试全部** | 通知渠道的结构化编辑（类型选单 + 对应字段，密钥按密码框处理并脱敏）。每张渠道卡片上还有自己的「测试」——**测的是当前填的内容，没保存也能先试** |
-| 配置页 | **原始配置**（折叠区） | 展开才是 `config.json` 原文，用来改端口、路径这类启动期配置；**这些才需要重启进程**，通知渠道不需要 |
-
-**页面上没有监控的启停 / 重启入口**——服务生命周期归进程，见上。
-
-累计计数（轮询 / 扫描 / 命中 / 推送）持久化在 `data/state.json` 里，**重启不清零**：去重表和命中历史本来就是持久的，计数若只留在内存里，界面会出现「已推送 0 条」而命中历史一大堆的自相矛盾组合。
-
-任务卡片上的状态标签由「配置意图」和「此刻是否真在跑」两个维度决定：
-
-| 标签 | 含义 |
-| --- | --- |
-| 绿色「运行中」 | 已启用，且抓取循环正在跑 |
-| 黄色「已启用 · 未运行」 | 配置里是启用的，但循环没跑起来（启动失败等）|
-| 灰色「已停用」 | 配置里停用了 |
-
-### 远程访问
-
-默认只监听 `127.0.0.1`，只有本机能访问。要让 NAS / 手机 / 公网访问，**必须设置访问密码**：
-
-```jsonc
-"web": {
-  "port": 7788,
-  "host": "0.0.0.0",
-  "password": "${WEB_PASSWORD}",  // 从 .env 读；至少 12 位随机串
-  "trustProxy": true,             // 放在反向代理后面时打开
-  "open": false
-}
-```
-
-打开地址会先跳到一个登录页，输对密码后拿到会话 Cookie。**没设密码时程序会拒绝监听 `0.0.0.0`**——这个控制台能启停抓取、改配置、看推送历史，等同于账号的操作面板，不能裸奔在公网上。
-
-鉴权的几条实现取舍（都在 `src/auth.mjs`，有单测钉着）：
-
-| 做法 | 为什么 |
-| --- | --- |
-| 会话是**随机 id**，不是密码本身 | 旧实现把令牌原样写进 Cookie，等于每台设备都存一份明文口令 |
-| 比较走 `timingSafeEqual` | `===` 会在第一个不同字符处提前返回，理论上可逐字节试探 |
-| 密码**只从 POST body** 取 | 查询串会进访问日志、Referer 和浏览器历史 |
-| 失败按 **IP 限流**：5 次后锁定，逐步加长，上限 1 小时 | 公网暴露没有限流，爆破只是时间问题 |
-| Cookie 带 `HttpOnly; SameSite=Lax`，https 时再加 `Secure` | 防脚本读取与跨站携带 |
-| 会话只在内存里 | 进程重启即全部失效，不必再落盘一份凭据 |
-
-> `trustProxy` 决定要不要相信 `X-Forwarded-For` / `X-Forwarded-Proto`。**默认关闭**是有意的：
-> 直接暴露时这两个头可以被伪造，打开就等于让攻击者随便换 IP 绕过限流、甚至伪造 https。
-> 放在反向代理后面（且代理会覆写这两个头）时才打开。
-
-`--token` 命令行参数与配置里的 `web.token` 仍然可用，但只当作密码的旧别名。
-
-Docker 部署时把端口发布出来即可：
-
-```yaml
-ports:
-  - "7788:7788"
-```
-
-## 快速开始（本机）
+要求：Node.js 20.11 或更高版本。
 
 ```bash
 npm install
-cp config.example.json config.json     # 改成你自己的关键词
-cp .env.example .env                   # 填通知渠道密钥（也可以先跳过：控制台的「配置」页有结构化表单）
-npm run login                          # 扫码登录：二维码直接打在终端里，手机扫屏幕即可，不需要浏览器
-npm run check                          # 校验配置，不联网
-npm run test:notify                    # 给所有渠道发一条测试消息
-npm start                              # 开始监控
 ```
 
-先跑一轮看不推送的结果，用来调关键词和过滤条件：
+复制配置文件：
+
+```powershell
+# Windows PowerShell
+Copy-Item config.example.json config.json
+Copy-Item .env.example .env
+```
+
+```bash
+# Linux / macOS
+cp config.example.json config.json
+cp .env.example .env
+```
+
+然后修改 `config.json` 中的关键词和筛选条件，并在 `.env` 中填写通知凭据。
+
+```bash
+npm run login          # 用闲鱼 App 扫描终端二维码
+npm run check          # 校验配置，不访问闲鱼
+npm run test:notify    # 测试通知渠道
+npm run web            # 启动控制台并开始监控
+```
+
+控制台默认地址为 <http://127.0.0.1:7788>。Windows 也可以双击 `start.cmd`，Linux / NAS 可以执行 `./start.sh`。
+
+只需要命令行监控时运行：
+
+```bash
+npm start
+```
+
+建议先试跑一轮确认筛选结果。默认只打印，不推送：
 
 ```bash
 node src/cli.mjs once --task macbook-air-m2
-node src/cli.mjs once --task macbook-air-m2 --notify   # 确认无误后再真推
+node src/cli.mjs once --task macbook-air-m2 --notify
 ```
 
-## 部署到云服务器 / NAS
+## 配置
 
-**扫码登录默认走纯 HTTP，二维码直接打在终端里**——不需要浏览器，也不需要图形界面：
+完整示例见 [`config.example.json`](config.example.json)。`${VAR_NAME}` 会从环境变量或同目录的 `.env` 读取；变量缺失时程序会直接报错。
 
-```bash
-node src/cli.mjs login          # 终端里出现二维码，手机扫屏幕即可
-```
-
-整个项目（登录 + 监控 + 控制台）都不需要 Chromium、不需要 Xvfb、也不需要 Playwright。
-
-### 服务器上登录：两条路都行
-
-**① 直接在服务器终端扫码**（推荐，什么都不用装）：
-
-```bash
-node src/cli.mjs login
-```
-
-二维码是用半块字符画在终端里的，手机对着屏幕扫即可。**不需要 Chromium、不需要 Xvfb、不需要图形界面**，容器里也一样。登录态直接写进 `data/cookies.json`。
-
-> 这条路顺带解决了一个更隐蔽的问题：浏览器版扫码登录依赖登录页的 DOM 与 iframe，**闲鱼改一次版就失效**（开源项目 `goofish-cli` 的 `auth login --qr` 就是这么挂的）。纯 HTTP 依赖接口契约，改版影响不到它。
-
-**② 在别的机器上登录，把 cookie 文件拷过去**：
-
-```bash
-# 在自己电脑上
-npm run login                                  # 扫码，写出 data/cookies.json
-scp data/cookies.json 用户@服务器:/opt/xianyu-monitor/data/
-```
-
-几 KB 的 JSON，跨平台直接可用（以前要拷 200MB 的浏览器 profile，还要求两边架构/版本接近）。
-
-### 服务器上到底需要什么
-
-| 需要 | 什么时候用 | 说明 |
-| --- | --- | --- |
-| **Node.js ≥ 20.11** | 一直 | 运行时依赖只有一个纯 JS 包（`qrcode-generator`，用来把二维码画在终端里） |
-| `data/cookies.json` | 监控运行期间 | **登录态就在这里**，靠 volume 挂载持久化 |
-
-由此得到的几条现实结论：
-
-- **监控常驻的资源占用很小**：没有 Chrome、没有 Xvfb，只有一个 Node 进程，外加每轮 1 次 HTTPS 请求。
-- **服务器上把 `web.open` 设成 `false`**，否则每次启动都会去调系统浏览器打开页面（没有 `xdg-open` 也不会崩，但那是个没必要的动作）。
-- **时区**：通知里的相对时间（"3 分钟前"）与时区无关，只有少数带绝对时间的文案受影响。宿主机是 UTC 时建议设 `TZ=Asia/Shanghai`（systemd 单元与 compose 里都给上了）。
-- **远端访问控制台**必须同时设 `web.host` 与 `web.password`，否则程序拒绝监听（见「远程访问」）。
-- **「点开看商品」始终在你自己的浏览器里打开**——服务端不参与，也就不会有"点了没反应"。
-- **登录态过期后要重新扫码**，这一步绕不开（平台要求），但**在服务器终端里就能完成**。
-
-### 这个项目里已经没有浏览器了
-
-登录走纯 HTTP（二维码打在终端里），「点开看商品」在你自己的浏览器里打开，监控与搜索都是直连接口。所以：
-
-- **运行时不需要 Playwright、Chromium、Xvfb**——`npm install --omit=dev` 之后只有一个纯 JS 依赖；
-- Playwright 仍在 `devDependencies` 里，但**只给验收脚本用**（`check-console-*.mjs` / `check-ui-metrics.mjs` 这些要真浏览器才能跑，`npm test` 用不到它）。
-
-**一句必须说清的话**：纯 HTTP 登录走的是网页端 passport 的二维码流程，它**没有公开文档**——和本项目已经复刻的 mtop 签名属于同一层性质。我们做的是**独立实现**（照协议事实重写，没有抄任何实现的代码：三个现成的纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件）。
-
-### 方式一：Docker Compose（推荐）
-
-```bash
-mkdir -p data && sudo chown -R 1000:1000 data    # 容器内以 uid 1000 运行
-docker compose run --rm xianyu-monitor node src/cli.mjs login   # 见下方「登录态」
-docker compose run --rm xianyu-monitor node src/cli.mjs check
-docker compose up -d
-docker compose logs -f
-```
-
-`config.json` 与 `data/` 通过 volume 挂载，容器重建不丢登录态；登录时二维码直接打在容器终端里。
-
-### 方式二：systemd
-
-```bash
-sudo cp -r . /opt/xianyu-monitor && cd /opt/xianyu-monitor
-npm install --omit=dev
-sudo cp deploy/xianyu-monitor.service /etc/systemd/system/
-sudo systemctl enable --now xianyu-monitor
-journalctl -u xianyu-monitor -f
-```
-
-### 方式三：群晖等 NAS
-
-用 Container Manager 导入 `docker-compose.yml`，把 `config.json` 与 `data` 目录映射到共享文件夹。
-
-<details>
-<summary>不用 Docker 直接在 NAS 上跑</summary>
-
-只需要 Node 20+（**不需要 Chromium、不需要 xvfb**），然后用「任务计划」或 `nohup` 执行：
-
-```bash
-node src/cli.mjs run
-```
-</details>
-
-## 登录态怎么维护（关键一步）
-
-登录态只有**一个**落点：`data/cookies.json`。扫码登录直接写它，mtop 响应里的 `Set-Cookie` 会持续回写——所以它是持续更新的，别改成只读。
-
-**会话失效时**（日志报「服务端会话已失效」或搜索要求登录）重新扫码即可：
-
-```bash
-node src/cli.mjs login
-```
-
-它不导航、不请求别的页面，只走 passport 的二维码接口。登录失败**不会**覆盖原来那份能用的登录态（有测试钉着）。
-
-> `cookie2` 是**会话级 cookie**（关掉浏览器即失效），而 mtop 必须带它。以前这条续期是靠每次加载页面被动拿到的；搜索改走直连之后，只剩 mtop 响应里的 `Set-Cookie` 这一条途径——所以 cookie 文件会被持续回写。
-
-闲鱼网页端是**扫码登录**，二维码几分钟就失效。现在**在服务器终端里直接就能扫**，不必再折腾截图或图形界面：
-
-1. **终端二维码（推荐）**
-   ```bash
-   node src/cli.mjs login
-   ```
-   二维码用半块字符画在终端里，手机对着屏幕扫即可。纯 HTTP 实现，**不需要浏览器、不需要图形界面**，容器里也一样。扫码确认后会自动完成登录并把登录态写进 `data/cookies.json`。`--timeout 600` 可以把等待时间放宽到 10 分钟。
-
-2. **在别的机器上登录后拷 `data/cookies.json`**：几 KB 的 JSON，跨平台直接可用。
-
-登录态通常能维持数周；失效后搜索接口会返回 `RGV587_ERROR`，日志与推送里会直接提示重新登录。
-
-## 配置说明
-
-相对路径以**配置文件所在目录**为基准（systemd / Docker 下更可预期）。`${VAR}` 会从环境变量或同目录 `.env` 读取；变量缺失会直接报错退出，不会静默用空值跑。
+一个任务的主要配置如下：
 
 ```jsonc
 {
-  "search": {
-    "timeoutMs": 20000,
-    "riskCookies": "omit"                     // omit=不发这类风控状态 cookie（默认）；remembered=带但剔掉已知会被拒的值
+  "name": "macbook-air-m2",
+  "enabled": true,
+  "notify": true,
+  "keyword": "MacBook Air M2",
+  "intervalSeconds": 120,
+  "jitterSeconds": 20,
+  "jumpLink": "app",
+  "nativeFilters": {
+    "priceRange": [2000, 3200],
+    "region": "江浙沪",
+    "sort": "newest",
+    "publishDays": 3
   },
-  "monitor": {
-    "maxBackoffSeconds": 300,        // 连续失败时单任务最长退避
-    "minRequestGapSeconds": 30,      // 两次搜索之间的全局最小间隔（跨任务，防多任务叠加触发风控）
-    "onUnknownField": "pass",        // 字段抓不到时：pass=照推并标注 / reject=丢弃
-    "heartbeatHours": 6,             // 心跳间隔
-    "failureAlertThreshold": 3,      // 连续失败多少次发一次告警
-    "notifyOnStart": true
-  },
-  "storage": {
-    "stateFile": "./data/state.json",
-    "seenLimit": 20000,
-    "seenRetentionDays": 30
-  },
+  "filters": {
+    "requireKeywords": [],
+    "excludeKeywords": ["求购", "展示机", "代拍", "回收"],
+    "excludeSellers": [],
+    "cityContains": ""
+  }
+}
+```
+
+### 筛选规则
+
+| 配置 | 用途 |
+| --- | --- |
+| `nativeFilters.priceRange` | 闲鱼服务端价格筛选 |
+| `nativeFilters.region` | 闲鱼服务端地区筛选，填写闲鱼界面中的地区名称 |
+| `nativeFilters.sort` | 目前只支持 `"newest"` |
+| `nativeFilters.publishDays` | 只看 1、3、7 或 14 天内发布的商品 |
+| `filters.requireKeywords` | 标题至少包含其中一个关键词 |
+| `filters.excludeKeywords` | 标题包含任一关键词时排除 |
+| `filters.requirePattern` / `excludePattern` | 用正则表达式包含或排除 |
+| `filters.excludeSellers` | 按卖家昵称精确排除 |
+| `filters.requireSellerCredit` | 最低卖家信用，可填 `优秀` 或 `极好` |
+| `filters.cityContains` / `cityAnyOf` | 对返回结果做本地地区判断 |
+
+价格、地区和发布时间优先使用 `nativeFilters`，这样服务端返回的结果已经经过筛选。`filters` 适合处理闲鱼服务端不支持的条件。
+
+搜索结果经常缺少发布时间和信用标签。默认 `monitor.onUnknownField` 为 `pass`，字段缺失时会放行并标注；如果宁可漏报也不接受未知字段，可改为 `reject`。
+
+### 轮询频率
+
+每个任务的一轮搜索只发出一次请求。建议单任务间隔从 120 秒起，根据任务数量适当增加。多个任务还会受到 `monitor.minRequestGapSeconds` 的全局间隔限制。
+
+不要为了调试连续运行搜索。触发风控后程序会告警并长时间退避，反复重试通常只会加重限制。
+
+### 去重
+
+只有通知至少成功送达一个渠道后，商品才会写入 `data/state.json` 的去重记录。因此：
+
+- 被筛掉的商品之后仍会重新判断；
+- 所有通知渠道都失败时，下一轮仍会重试；
+- 关闭推送开关时，命中会保留在控制台历史中，但不会在恢复后补发。
+
+## 通知
+
+支持以下 `notify.channels[].type`：
+
+| 类型 | 必填字段 |
+| --- | --- |
+| `telegram` | `botToken`、`chatId` |
+| `dingtalk` | `webhook`，可选 `secret` |
+| `wecom` | `webhook` |
+| `bark` | `key`，可选 `server`、`sound` |
+| `serverchan` | `sendKey` |
+| `webhook` | `url`，可选 `headers` |
+
+推荐把密钥放在 `.env`，在 `config.json` 中引用：
+
+```json
+{
   "notify": {
-    "timeoutMs": 10000,
-    "maxPerCycle": 8,                // 单轮最多发几条即时消息，超出合并成一条汇总
-    "channels": [{ "type": "telegram", "botToken": "${TG_BOT_TOKEN}", "chatId": "${TG_CHAT_ID}" }]
-  },
-  "web": {
-    "port": 7788,                    // 控制台端口
-    "host": "127.0.0.1",             // 改成 0.0.0.0 时必须同时设 password
-    "password": "${WEB_PASSWORD}",   // 访问密码，从 .env 读；公网至少 12 位随机串
-    "trustProxy": false,             // 放在反向代理后面时改成 true
-    "open": true                     // 启动后自动打开浏览器
-  },
-  "tasks": [
-    {
-      "name": "2k-144hz-monitor",    // 日志与去重用的名字，必填
-      "enabled": true,
-      "keyword": "2K 显示器",
-      "intervalSeconds": 180,        // 基础轮询间隔
-      "jitterSeconds": 20,           // 随机抖动，避免固定节奏
-      "scrollRounds": 0,             // 向下滚动几次以加载更多结果
-      "nativeFilters": {             // 交给闲鱼页面原生执行的筛选（服务端过滤）
-        "priceRange": [500, 700],
-        "region": "江浙沪"           // 取值要与闲鱼区域面板一致：江浙沪/珠三角/京津冀/东三省/省份名
-      },
-      "filters": {                   // 客户端过滤：只放服务端做不到的判断
-        "requireKeywords": [],       // 标题必须包含其一（可当品牌白名单）
-        "excludeKeywords": ["同款", "求购", "仅拆封", "展示机", "代拍", "回收"],
-        "excludeSellers": [],        // 卖家昵称精确匹配
-        "maxAgeMinutes": 120,        // 只看该时间窗内发布的（注意：见下方说明，本项目里基本不生效）
-        "cityContains": ""           // 地区包含匹配；多个地区用 nativeFilters.region
+    "channels": [
+      {
+        "type": "telegram",
+        "botToken": "${TG_BOT_TOKEN}",
+        "chatId": "${TG_CHAT_ID}"
       }
-    }
-  ]
+    ]
+  }
 }
 ```
 
-### 两层过滤怎么分工
+控制台的“配置”页也可以添加、编辑和单独测试通知渠道，保存后立即生效。
 
-**价格和区域都优先用 `nativeFilters`，它们由服务端执行。** 原因很实在：服务端一页只给 30 个名额。只做客户端过滤时，这 30 条是全国综合排序的结果——实测某轮 30 条全部落在价格区间之外（工厂店用 ¥161 之类的诱导价），等于整轮空转。
+## Web 控制台
 
-| 条件 | 原生筛选 | 实测效果 |
-| --- | --- | --- |
-| 价格 | `nativeFilters.priceRange` | 筛选批 30 条全部落在区间内 |
-| 区域 | `nativeFilters.region` | 筛选批 30 条全部在指定地区 |
-| 最新发布 | `nativeFilters.sort: "newest"` | 请求体带 `sortField=create&sortValue=desc` |
-| 发布时间窗 | `nativeFilters.publishDays` | `propValueStr.searchFilter` 带 `publishDays:3;` |
-| 卖家信用 | `filters.requireSellerCredit`（**只能本地**）| 见下方说明 |
+`npm run web` 会启动控制台和监控进程。控制台提供：
 
-```json
-"nativeFilters": {
-  "priceRange": [500, 700],
-  "region": "江浙沪",
-  "sort": "newest",
-  "publishDays": 3
+- 运行概览和累计统计
+- 任务的新建、编辑、复制、停用和删除
+- 命中历史与手动重推
+- 实时日志
+- 通知渠道配置与测试
+
+默认只监听本机。需要从局域网或反向代理访问时，至少配置：
+
+```jsonc
+{
+  "web": {
+    "host": "0.0.0.0",
+    "port": 7788,
+    "password": "${WEB_PASSWORD}",
+    "trustProxy": true,
+    "open": false
+  }
 }
 ```
 
-`sort`（最新）与 `publishDays`（1/3/7/14 天内）互相独立：前者是**排序**，走请求体顶层的 `sortField`/`sortValue`；后者是**筛选**，和价格同处 `propValueStr.searchFilter`（分号分隔，可叠加，如 `priceRange:500,700;publishDays:3;`）。
+- 对外监听时必须设置访问密码，公网建议使用至少 12 位随机串；
+- 只有放在会覆写转发头的可信反向代理后面时，才启用 `trustProxy`；
+- 公网访问必须使用 HTTPS；
+- 不要直接把 7788 端口暴露到公网。
 
-请求体由 `src/mtop.mjs` 的 `buildSearchBody()` 拼装，字段布局都在那个函数里。`region` 的取值要和闲鱼区域面板一致：预设 `江浙沪` / `珠三角` / `京津冀` / `东三省` / `全国`，或省份名（`上海` / `江苏` / `浙江` …）；不在预设里的按具体省份处理，填城市名可能不生效，用 `filters.cityContains` 兜底。
+## 登录态与数据
 
-`publishDays` 比 `maxAgeMinutes` 可靠得多：搜索响应里基本没有发布时间的结构化字段，`maxAgeMinutes` 长期处于「按未知放行」的状态。想只盯新货就用 `publishDays`。
+扫码登录后，登录态保存在 `data/cookies.json`。搜索响应可能更新 Cookie，因此 `data/` 必须可写。
 
-### 卖家信用只能用本地过滤
-
-闲鱼**没有**「卖家信用」这个筛选参数，顶部只有「综合 → 信用排序」（是排序，不是过滤）。所以 `filters.requireSellerCredit` 走客户端判定：从商品的 `exContent.fishTags` 里读「卖家信用极好 / 优秀」标签，按等级比较。
-
-要注意它的代价：**实测 30 条搜索结果里只有 6 条挂了信用标签**，没挂标签的按不达标处理，所以配 `极好` 会筛掉九成左右的结果。嫌太狠可以放宽到 `优秀`。
-
-```json
-"filters": { "requireSellerCredit": "极好" }
-```
-
-### 筛选没生效就不推送
-
-请求体是自己拼的，所以「条件有没有带上」在构造处就校验一遍（`bodyMatchesFilters`）：对不上就抛 `filters-not-applied`、**本轮不推送任何商品**，而不是退回用一批不带条件的全国结果。
-
-宁可这一轮不出结果并告警，也不推垃圾：推送里混进无关商品会让人开始忽略通知，那比漏报更糟。
-
-### 请求次数：每轮恒为 1 次
-
-默认 `search.mode: "http"`：搜索**不经过页面**，直接向 `h5api.m.goofish.com` 发一次签名请求，所以每轮恒为 1 次，不存在「冷启动」这回事。
-
-| 模式 | 每轮请求次数 | 说明 |
-| --- | --- | --- |
-| `http`（默认） | **恒为 1** | 直接调 mtop，1 次请求拿到 30 条 |
-
-改直连的原因是**请求密度**：驱动页面时每次冷启动都会在几秒内连发 4~6 次，而突发正是风控的触发条件。直连之后这个连发从根上没有了。
-
-每轮日志会打印实际请求次数，省没省一眼可见：
-
-```
-第 1 轮：1 次请求，扫描 30 条（30 条带 App 直达链接），命中 0 条
-第 2 轮：1 次请求，扫描 30 条（30 条带 App 直达链接），命中 0 条
-```
-
-启动时还有一次登录态探测（也是直连 `loginuser.get`，1 次请求，不加载页面）。所以 http 模式下**整个进程都不启动浏览器**，`checkSession` 原先那次「加载首页再看返回码」也已经去掉——那既要驱动页面，又恰好是唯一还把浏览器拉进搜索链路的动作。
-
-登录与监控都在这个文件上交接：扫码登录直接写它，mtop 响应里的 `Set-Cookie` 会持续回写。**它就是你账号的登录凭据**，权限默认收到 0600，且整个 `data/` 都在 `.gitignore` 里，别提交到仓库。
-
-所以 `intervalSeconds` 可以设得比以前更放心：120 秒一轮约合每分钟 0.5 次，远低于之前实测触发风控的每分钟 3 次量级。
-
-另外还有一道**全局请求闸**（`monitor.minRequestGapSeconds`，默认 30 秒）现在也管住了直连路径：它在每次真正发请求前**预约一个时间槽**，所以「立即检查」多任务、`once` 多任务、以及任何同时发起的调用都会被自动拉开，既不会并发打出去，也不会叠成短时高频。调试脚本走的是同一个闸。
-
-**直连换掉了什么**，得说清楚：
-
-- 复刻了 mtop 的 H5 签名 `md5(token&t&appKey&data)`。它是一行公开算法（不是 App 端依赖 native 库的 `x-sign`/`x-mini-wua`），但确实越过了本项目原先「不复刻任何签名」那条线；换来的是请求数从 5 降到 1。
-- 筛选条件改成**由我们自己拼进请求体**。以前是靠解析页面**实际发出**的请求体来证明「筛选真的生效了」，现在这个校验退化成「检查自己有没有漏拼字段」——它仍能挡住拼装回归，但**挡不住服务端不认筛选**。想要那份服务端级别的确认，把 `search.mode` 设回 `"browser"`。
-- 区域筛选的两种形态（预设 → `extraDivision`，具体省份 → `divisionList`）以前是页面自己决定的，现在由 `src/mtop.mjs` 的 `REGION_PRESETS` 判断；填了没在表里的城市名可能不生效，此时用 `filters.cityContains` 兜底。
-
-### 客户端过滤的定位
-
-**价格和地区都只在服务端过滤，不再配一遍客户端条件。** 请求体级别已经有校验（见上一节），再加一层客户端条件只会让人以为有两道防线，而它掩盖的正是"筛选压根没生效"这种真问题。
-
-`filters` 里保留的是**服务端做不到的判断**：
-
-| 条件 | 作用 |
-| --- | --- |
-| `requireKeywords` | 品牌白名单，实现「不要杂牌」 |
-| `requirePattern` | 带边界的正则，如「144Hz 以上」（`requireKeywords` 写 "144" 会被 "1440P" 误命中）|
-| `excludeKeywords` / `excludePattern` | 排掉「同款」「求购」「展示机」这类 |
-| `excludeSellers` | 卖家黑名单 |
-
-`minPrice` / `maxPrice` / `cityAnyOf` 这几个字段仍然保留在程序里（有用例覆盖），如果哪天原生筛选失效又不想被打扰，可以临时配上它们兜底。
-
-### 关于 `onUnknownField`
-
-接口不一定每轮都给出价格或发布时间。默认 `pass`：仍然推送，但在消息里标注 `⚠️ 未判定字段：publishTime`，心跳里也会累计计数——因为**漏报比误报更难被发现**。若你的关键词很宽、宁可少推也不要误推，改成 `reject`。
-
-### 关于去重
-
-只有**推送成功**的商品才会写入 `data/state.json`。因此：
-
-- 被过滤掉的商品每轮都会重新判定，**降价后仍然会通知你**；
-- 所有渠道都投递失败时不会标记为已推送，下一轮会重试。
-
-## 通知渠道
-
-命中之后往哪推，由 `config.json` 的 `notify.channels` 决定。**可以配多个，任何一个成功即视为推送成功**（`notify.maxPerCycle` 限制单轮最多发几条即时消息，超出会合并成一条汇总）。
-
-**控制台的「配置」页有结构化编辑器**：选类型、按该类型填字段（密钥按密码框处理），每张卡片上都能单独「测试」，**测的是当前填的内容——没保存也能先试**。保存后**即时生效，不需要重启进程**。下面的步骤是命令行 / 手改配置的等价做法。
-
-| type | 必填 | 可选 | 命中消息怎么跳转 |
-| --- | --- | --- | --- |
-| `telegram` | `botToken`、`chatId` | — | 内联按钮「打开商品」 |
-| `dingtalk` | `webhook` | `secret` | 正文里的网页链接（纯文本消息） |
-| `wecom` | `webhook` | — | 同上 |
-| `bark` | `key` | `server`、`sound` | `url` 参数，**点通知直接跳商品页**，并按任务名分组 |
-| `serverchan` | `sendKey` | — | 正文里的网页链接 |
-| `webhook` | `url` | `headers` | POST JSON 里带 `url` / `webUrl` / `group` |
-
-### 三步配好
-
-**① 拿凭据**
-
-| 渠道 | 去哪拿 |
-| --- | --- |
-| Telegram | 找 [@BotFather](https://t.me/BotFather) 发 `/newbot`，拿到 `botToken`；再找 [@userinfobot](https://t.me/userinfobot) 拿你的 `chatId`（群聊的 id 是负数） |
-| 钉钉 | 群 → 群设置 → 智能群助手 → 添加机器人 → 自定义，复制那串 `https://oapi.dingtalk.com/robot/send?access_token=…`。安全设置选「加签」时，把 `SEC…` 开头的密钥填进 `secret`（本项目按钉钉的 `timestamp\nsecret` 规则自己算签名） |
-| 企业微信 | 群 → 群机器人 → 添加，复制 webhook 地址 |
-| Bark | App 首页给你一串 key，形如 `https://api.day.app/XXXXXXXX` 里的 `XXXXXXXX`；自建服务改 `server` |
-| Server酱 | [sct.ftqq.com](https://sct.ftqq.com/) 登录后拿 `SendKey`（`SCT` 开头） |
-| webhook | 你自己的接收端，收到的是 POST JSON |
-
-**② 填进 `.env`**（`cp .env.example .env`；`.env` 已被 `.gitignore` 排除）
-
-```ini
-TG_BOT_TOKEN=123456:ABC...
-TG_CHAT_ID=123456789
-BARK_KEY=abc123
-```
-
-变量名和 `.env.example` 里的一致：`TG_BOT_TOKEN` / `TG_CHAT_ID` / `DINGTALK_WEBHOOK` / `DINGTALK_SECRET` / `WECOM_WEBHOOK` / `BARK_SERVER` / `BARK_KEY` / `SERVERCHAN_KEY` / `GENERIC_WEBHOOK_URL`。
-
-**③ 在 `config.json` 里用 `${VAR}` 引用**
-
-```json
-"notify": {
-  "channels": [
-    { "type": "telegram", "botToken": "${TG_BOT_TOKEN}", "chatId": "${TG_CHAT_ID}" },
-    { "type": "bark", "key": "${BARK_KEY}", "server": "https://api.day.app" }
-  ]
-}
-```
-
-`${VAR}` 会从环境变量或同目录的 `.env` 里读（**已存在的环境变量优先于 `.env`**）。**变量缺失会直接报错退出**，不会静默用空值跑——所以名字写错会立刻发现，而不是变成"推送莫名其妙发不出去"。
-
-不想用 `.env` 也可以把密钥直接写进 `config.json`，但那样它就是明文躺在那儿；`config.json` 同样在 `.gitignore` 里，别提交。
-
-**④ 测一下再放着跑**
+`data/cookies.json` 等同于账号凭据：不要分享、不要提交到 Git，也不要放进部署包。登录失效时重新运行：
 
 ```bash
-npm run test:notify
+npm run login
 ```
 
-控制台顶部的「**测试通知**」按钮效果一样。哪个渠道失败会单独报出来——key 填错、webhook 失效是最常见的两种。
+也可以在其他机器登录后，将 `data/cookies.json` 复制到服务器的同一位置。
 
-### 两级推送开关
+## Docker 部署
 
-- **标题栏的铃铛**：总开关，一键静默全部商品推送
-- **每张任务卡上的「推送」开关**：只静默这个任务
-
-两级是「与」的关系。**静默时监控照常跑、命中照常记入历史，只是不发通知**——所以调关键词时不会被刷屏，重新打开开关也不会把静默期间的积压一次性补推。但**登录失效、筛选没生效这类告警不受静默影响**，否则你会把唯一的求助信号也静掉。
-
-### 通知文案
-
-命中消息固定压成两行，价格和商品名在最显眼的位置：
-
-```
-¥568 · 95新 AOC 2k 180电竞游戏27寸显示器 转让AOC 宙斯盾系列
-上海 · 数码小铺 · 3 分钟前
-```
-
-- 商品名会先按句读在第一个自然边界截断、再按 40 字兜底截断——闲鱼标题常把整段描述、参数和客服话术塞进来。
-- 字段抓不到时就地写成「价格未知 / 地区未知 / 时间未知」，不再另起一行堆诊断信息。
-- 单任务不带任务名；**多个任务时**标题末尾会附上任务名，便于分辨是哪条规则命中。
-- 钉钉/企业微信这类纯文本渠道不吃 scheme，因此正文里补的始终是网页链接。
-
-### 关于点击跳转
-
-Bark 和 Telegram 的正文都是纯文本，光把链接写进正文是**点不动**的，因此这两个渠道会额外带上跳转目标：
-
-- Bark：`url` 查询参数 → 点整条通知直接跳转，并按任务名 `group` 分组；
-- Telegram：内联按钮「打开商品」。
-
-跳转目标由每个任务的 `jumpLink` 决定：
-
-| 取值 | 跳转目标 | 说明 |
-| --- | --- | --- |
-| `app`（默认） | 接口返回的 `fleamarket://item?id=...` | 点一下**直接进闲鱼 App**（iOS + Bark 实测可用）；接口没给深链时自动回退网页链接 |
-| `web` | `linkTemplate`（默认 `https://www.goofish.com/item?id={id}`） | 一定能打开，落到网页版商品页 |
-
-正文里固定保留一份网页链接，方便复制粘贴。
-
-**控制台里点命中行**按设备选链接（与上面的通知跳转是两件事）：
-
-| 打开控制台的设备 | 点一行会打开 | 为什么 |
-| --- | --- | --- |
-| 电脑浏览器 | 新标签打开商品页 | **始终在你自己的浏览器里打开**。以前是"让服务端那个已登录的浏览器窗口去开"，那个设计是错的：控制台跑在服务器/NAS 上时那个窗口你看不见，点了像没反应 |
-| 手机浏览器 | App 深链 `fleamarket://item?id=...` | 手机上闲鱼能接管这个 scheme，直接进 App；接口没给深链时回退网页链接 |
-
-服务端不再参与打开商品这件事——`/api/open-item` 与浏览器里那套标签页管理已经删掉了。
-
-**关于商品分享码 / 二维码**：PC 网页商品页**没有**分享入口（实测对全页所有元素的 `title`/`aria-label`/`alt`/`href`/`class` 穷举匹配 `分享|二维码|share|qrcode|复制|口令`，全部无命中），分享码是 App 端功能。但**不需要去解码二维码**——搜索接口给每个商品都返回了 App 深链 `targetUrl`（实测 30/30 条都有，且逐商品不同），扫码得到的跳转目标就是同一族地址：
-
-```
-fleamarket://item?id=1084546564468&referPageArgs=2K+显示器&gulSource=search&...
-```
-
-所以本工具直接用接口给的深链，既不用截图也不用解码。另外商品页 DOM 里还能拿到两个直达链接，需要的话可以自行拼：
-
-```
-https://www.goofish.com/create-order?itemId=<id>   # 直达下单页
-https://www.goofish.com/im?itemId=<id>&peerUserId=<uid>   # 直达聊天
-```
-
-钉钉/企业微信是文本消息，客户端会自动识别正文里的 http 链接。
-
-## 命令一览
+先准备 `config.json`、`.env` 和可写的 `data/` 目录：
 
 ```bash
-node src/cli.mjs web          # 图形控制台（等价于 npm run web）
-node src/cli.mjs run          # 纯命令行启动监控（默认命令）
-node src/cli.mjs login        # 扫码登录：二维码直接打在终端里，不需要浏览器
-node src/cli.mjs check        # 静态校验配置与运行环境
-node src/cli.mjs once         # 跑一轮只打印，不推送；--notify 才推送
-node src/cli.mjs dump         # 保存原始响应，用于接口字段变化时改适配层
-node src/cli.mjs test-notify  # 测试所有通知渠道
+mkdir -p data
+sudo chown -R 1000:1000 data
+docker compose run --rm xianyu-monitor node src/cli.mjs login
+docker compose run --rm xianyu-monitor node src/cli.mjs check
+docker compose up -d --build
+docker compose logs -f
 ```
 
-通用参数：`--config 路径`、`--task 名称`。`web` 额外支持 `--port`、`--host`、`--no-open`。也可用环境变量 `XIANYU_CONFIG` 指定配置。
+仓库根目录的 `docker-compose.yml` 默认只运行命令行监控。需要通过反向代理使用 Web 控制台时，请使用 [`deploy/compose.server.yml`](deploy/compose.server.yml)，完整步骤见 [`deploy/README-部署.md`](deploy/README-部署.md)。
 
-## 调参建议
+群晖等 NAS 可以用 Container Manager 导入 Compose 文件，并将 `config.json` 与 `data/` 映射到持久化目录。
 
-- **间隔可以设到 120 秒左右**。默认每轮恒为 1 次请求，120 秒一轮约合每分钟 0.5 次，远低于实测触发风控的每分钟 3 次量级。多任务会串行执行，总请求量按 `1/间隔` 累加。
-- **多任务时注意总频率，程序也有一道全局闸**。`monitor.minRequestGapSeconds`（默认 30 秒）在真正发起搜索前统一等待，跨任务限制两次搜索的最小间隔——单个任务的 `intervalSeconds` 只约束它自己，几个 60 秒的任务叠加就可能踩线。启动时如果算出来合计超过 2 次/分钟，日志会直接提醒你调大间隔或减少任务。
-- **调参和排查都不要短时间反复试探**。实测连续几次搜索就会触发风控，严重时直接让登录态失效、需要重新扫码。验证关键词或筛选条件用 `node src/cli.mjs once`（跑一轮就停，1 次请求）。
-- **价格和区域都用 `nativeFilters`**（服务端过滤，30 个名额全落在条件内），不要再配一遍客户端条件。每轮 1 次请求，所以 `intervalSeconds` 可以设到 120 秒左右。
-- **关键词越精确越好**。"2K 显示器" 比 "显示器" 少几十倍无效结果，也少几十倍被限流的概率。
-- **`maxAgeMinutes` 在本项目里基本不生效**。闲鱼 PC 搜索响应通常不返回发布时间（实测 59 条里 57 条缺失），该条件会落到「时间未知」并按策略放行。真正防止重复推送的是去重表——同一条商品只会推一次。留这个字段是为了接口哪天补上发布时间后能直接用，启动时程序会就此告警。
-- **用 `requirePattern` 表达带边界的条件**。"144Hz 以上" 写成 `requireKeywords: ["144"]` 会被 "1440P" 误命中，写成 `requirePattern: "(144|165|240)\\s*hz"` 才准。
-- **`requireKeywords` 可以当品牌白名单**。填一组品牌名即可实现「不要杂牌」，比用排除词穷举杂牌可靠。
-- **别把 `excludeKeywords` 写太窄**。"求购/仅拆封/展示机/代拍/回收" 这几类基本必排。
+## 命令
 
-## 故障排查
-
-| 现象 | 原因与处理 |
+| 命令 | 作用 |
 | --- | --- |
-| 日志出现「闲鱼弹出了风控验证（baxia 弹层）」 | 见下面「风控」一节。程序会立刻告警并按 `monitor.riskControlCooldownSeconds`（默认 30 分钟）长时间退避，不再反复撞 |
-| 日志出现「筛选没生效 / 请求体没带全部条件」 | 拼装请求体时漏了字段（`buildSearchBody`）。按提示检查 `nativeFilters` 的取值是否是支持的形态 |
-| 日志出现「请求被闲鱼拦截（RGV587_ERROR…被挤爆啦）」 | 分两种，先看处罚链接里的 `action`：`deny` 是直接拒绝（见下面「被『访问被拒绝』拦住」），其余按频率过高处理——调大 `intervalSeconds`（≥60）后再试；该错误码在登录失效时也会出现，若降速后依旧如此再重新 `login` |
-| 日志出现「搜索接口被闲鱼直接拒绝（action=deny）」 | 不是频率问题，调间隔、重新登录、过验证都无效。跑 `node diagnose-risk.mjs` 看结论 |
-| 日志出现「搜索接口要求登录」 | 会话失效，重新执行 `login` |
-| 启动就报「登录态不可用 / 会话已失效」 | `data/cookies.json` 不存在或已过期。跑 `npm run login` 重新扫码（二维码打在终端里） |
-| 日志出现「回退到 DOM 解析」 | 搜索接口结构变了。`once` 仍能拿到商品则能用，但字段会缺；执行 `dump` 保存响应后按需改 `src/parse.mjs` |
-| 命中数长期为 0 | 看心跳里的「扫描 N 条」。扫描为 0 是抓取问题，扫描很多但命中 0 是过滤太严 —— 用 `once` 看每条被跳过的原因 |
-| 推送里出现「价格未知」 | 接口没返回价格。先跑 `dump` 保存原始响应，再看 `src/parse.mjs` 的取价字段是否需要调整 |
-| 推送不出去 | `test-notify` 逐个渠道看报错，key 或 webhook 填错最常见 |
-| 扫码后终端里的二维码扫不出来 | 终端字体需要是等宽且支持半块字符；实在不行把窗口拉宽一点（二维码用半块字符拼的）。也可以换台机器登录后拷 `data/cookies.json` |
+| `npm run web` | 启动 Web 控制台和监控 |
+| `npm start` | 仅启动命令行监控 |
+| `npm run login` | 扫码登录 |
+| `npm run check` | 校验配置和运行环境 |
+| `npm run test:notify` | 测试全部通知渠道 |
+| `node src/cli.mjs once` | 运行一轮，默认不推送 |
+| `node src/cli.mjs dump` | 保存原始搜索响应，便于排查接口变化 |
 
-## 风险与合规
+通用参数为 `--config 路径` 和 `--task 名称`。`web` 还支持 `--port`、`--host`、`--no-open`；`login` 支持 `--timeout 秒`。也可以用 `XIANYU_CONFIG` 指定配置文件。
 
-- **违反《闲鱼用户协议》。** 本工具通过程序自动化访问闲鱼并抓取搜索接口，平台对这类行为有明确处置手段。处置是**有梯度**的，本项目实测到的顺序是：接口返回 `RGV587` → 处罚链接 `action=deny`（页面显示「访问被拒绝」）→ 登录态失效。再严重就是限制功能甚至封号。
-- **只用小号，主号请勿使用。** 这不是客套话：本项目开发过程中同一个账号在几小时内被反复风控，最后直接导致登录态失效、必须重新扫码。
-- **保持低频。** 默认每轮恰好 1 次请求、轮询 120 秒；全局闸 `monitor.minRequestGapSeconds` 保证「立即检查」多任务与调试脚本也不会并发或短时高频。**不要**为了"快一点"把这些值调小——被拒的请求本身就是又一次风控压力。
-- **不要**把账号 cookie、`data/cookies.json` 交给任何第三方（含"代拍"服务），已有隐私泄露的公开报道。仓库的 `.gitignore` 已把整个 `data/` 排除在外。
-- **本工具做了什么、没做什么**（如实说明，别只看标签）：
-  - **没有**实现验证码绕过，**没有**伪造浏览器指纹，也**没有**逆向 App 端签名（`x-sign` / `x-mini-wua` 那一族依赖真机 native 库，本项目不碰）。
-  - **复刻了网页端公开的 H5 mtop 签名**（`md5(token&t&appKey&data)`）。这本身也是一条取舍：它把每轮请求数从 5 降到 1，但确实越过了本项目早期「不复刻任何签名」的自我约束。
-  - **登录走网页端 passport 的二维码流程**（`/newlogin/qrcode/*` + `/login_token/login.do`）。它同样没有公开文档，和上面那条 H5 签名属于同一层性质。实现是照协议事实**独立重写**的——现成的三个纯 HTTP 实现里，一个是 GPL-3.0、两个根本没有 LICENSE 文件，一行代码都没抄。
-  - 默认**不携带**平台下发的风控状态 cookie（`search.riskCookies: "omit"`）。实测它只是把平台施加的处罚带过来、并不承担功能，不带它请求照常成功；但这等于让客户端绕开平台施加的这道处罚。默认值如此，是否接受由使用者自行判断。
-- **资金安全**：本工具完全不接触支付环节，不代下单、不代支付。
+## 常见问题
 
-## 风控
+| 现象 | 处理 |
+| --- | --- |
+| 提示登录态不可用或搜索要求登录 | 重新运行 `npm run login` |
+| 命中长期为 0 | 用 `once` 查看每条商品被跳过的原因，检查筛选是否过严 |
+| 通知发送失败 | 运行 `npm run test:notify`，检查密钥和 Webhook |
+| 出现 `RGV587`、baxia 或 `action=deny` | 停止频繁尝试并等待退避；可运行 `node diagnose-risk.mjs` 查看分类 |
+| 提示筛选未生效 | 检查 `nativeFilters` 的字段和值，程序会中止本轮推送而不是返回未筛选结果 |
+| 字段显示未知 | 运行 `dump` 保存响应，确认闲鱼接口是否改变 |
+| 终端二维码无法扫描 | 使用等宽字体、拉宽窗口，或换一台机器登录后复制 Cookie 文件 |
 
-闲鱼用阿里系的 **baxia 风控**。撞上之后提示码都是 `RGV587_ERROR`，但有**两种完全不同的形态**，处理方式相反，只能看处罚链接里的 `action` 区分：
+## 安全与风险
 
-| `action` | 现象 | 有无人工作用 |
-| --- | --- | --- |
-| `captcha` / `verify` | 页面弹滑块 | 有。用**普通 Chrome** 打开闲鱼过掉（自动化窗口里过不了，别在里面反复试） |
-| `deny` | 页面显示「访问被拒绝」，没有可点的验证项 | **没有**。调大间隔、重新登录、过验证都无效 |
+- 本项目使用网页端二维码登录和 H5 mtop 签名，均不是公开 API；平台可能随时调整接口。
+- 默认 `search.riskCookies` 为 `omit`，不会携带已知的风控状态 Cookie。请在理解其行为和平台规则后使用。
+- 保持低频，不要启用多账号并发，也不要尝试绕过验证码或平台风控。
+- 不要提交 `config.json`、`.env` 或 `data/`。其中可能包含通知密钥和账号登录态。
+- 使用本项目产生的后果由使用者自行承担。
 
-程序侧的配合：两种都会**立刻告警**并按 `monitor.riskControlCooldownSeconds`（默认 30 分钟）长时间退避——重试没有意义，只会让风控等级更难下来。想确认当前是哪种形态，跑 `node diagnose-risk.mjs`：**不加载页面**，只用几次 mtop 请求打出会话状态、同一批里其它接口的结果，以及搜索失败的归类。
+## 开发
 
-**最省事的办法是从源头上不撞它**：`intervalSeconds` 保持 120 秒以上、别为了调试反复手翻搜索页、多任务时留意启动时那条总频率提醒。调试用 `once` 或 `debug-single-cycle.mjs`（跑一轮就停），不要连着跑。
-
-### 这一节是怎么定性的
-
-同一个错误码有两种形态，从日志里看不出区别，所以 `diagnose-risk.mjs` 用几次 mtop 请求把关键事实摊开：会话是否真的有效、**同一批请求里其它 mtop 接口成不成功**（只有 search 失败＝搜索接口被单独判定；全都失败＝会话问题）、搜索失败的归类是 `deny` 还是 `baxia`。它不加载页面——**加载页面本身也可能是一次风控压力**。
-
-结论是：`deny` 不是频率问题（停机数小时后**第一个**请求就会被拒）、不是登录问题（同一批里其它接口全 `SUCCESS`）、也**与客户端形态无关**（不启浏览器的纯 HTTP 请求同样会复现）。所以程序不做"换个姿势再试一次"这种事，而是退避 + 告警。
-
-几条已经验证过、不必再花时间的路：
-
-- **换 UA / 手机版网页没用**：`www.goofish.com/search` 在手机 UA 下仍是同一个 PC SPA、同一个接口；也没有可用的 H5 搜索站。
-
-- **别改走 App 协议**：移动端那套签名（`x-sign` / `x-mini-wua` / `x-sgext` / `x-umt`）依赖真机 native 库，公开的复刻方案目前仍过不了服务端校验。
-
-## 目录结构
-
-```
-src/
-  cli.mjs        命令入口与参数解析
-  config.mjs     配置加载、${ENV} 展开、校验
-  search.mjs     筛选条件与请求体的对应关系（价格 / 区域 / 排序 / 发布时间窗）
-  mtop.mjs       直连搜索（默认）：构造请求体、H5 签名、每轮 1 次请求、全局请求闸
-  cookies.mjs    文件版 cookie 仓库：登录态的唯一来源，mtop 响应里的 Set-Cookie 会回写到这里
-  qrlogin.mjs    纯 HTTP 扫码登录：passport 流程 + 终端二维码渲染，不启浏览器
-  parse.mjs      闲鱼响应字段适配层（接口变化只改这里）
-  rules.mjs      命中判定（纯函数）
-  store.mjs      已推送去重表
-  notify.mjs     通知渠道与文案
-  monitor.mjs    主循环：调度、退避、心跳、告警
-  supervisor.mjs 运行时管理：生命周期、状态快照、命中历史、扫码登录
-  auth.mjs       登录密码闸：随机会话、按 IP 失败限流、恒定时间比较
-  server.mjs     控制台 HTTP 服务：JSON 接口、SSE 实时日志、登录校验
-  web/index.html 控制台前端（单文件，零依赖）
-  web/login.html 登录页（单文件，服务端注入错误信息）
-test/            node --test 单测与集成测试（用假 Page / 假 fetch / 假 supervisor）
-deploy/          systemd 单元示例、公网部署 compose 与说明（deploy/README-部署.md）
-docs/           调研记录：闲鱼开源生态、mtop 签名方案、反检测与真机路线（含证据分级与出处）
-start.cmd        Windows 双击启动控制台
-start.sh         Linux / NAS 启动控制台（首次自动装依赖）
-check-console.mjs  控制台验收：真机加载页面、抓 JS 错误、点测试通知与启停
-check-console-tasks.mjs  任务增删改验收：走一遍编辑/新建/即时生效/删除，跑完自动还原 config.json 与运行时
-check-console-ui.mjs     主题/滚动条/单任务开关验收：含亮色主题对比度与开关失败回滚，跑完自动还原 config.json
-check-console-notify.mjs 推送开关（总开关 + 单任务）/命中行跳转链接/弹层关闭按钮验收，跑完自动还原 config.json
-check-design-conformance.mjs  设计规范验收：外壳结构、表面梯度、强调色唯一、无 emoji、圆角阶梯、逐路由单屏、卡片行内对齐
-check-dom-contract.mjs   静态核对：JS 引用的每个元素 id 在 HTML 里都存在（不需要浏览器）
-check-task-form-filters.mjs  任务表单新筛选字段的往返验证（设置→保存→进配置→回填→清空），只走本地接口
-clean-test-residue.mjs   清理验收脚本留下的测试任务在命中历史与去重表里的记录（默认只预览，--dry-run）
-debug-single-cycle.mjs   受控调试：配好原生筛选后只跑一轮就停，用来确认筛选是否真的生效（不反复试探）
-diagnose-risk.mjs        风控体检：一次页面加载判定是限流、会话失效还是「直接拒绝」，并给出下一步
-clean-test-residue.mjs   清理验收脚本留下的测试任务在命中历史与去重表里的记录（默认只预览，--dry-run）
-check-ui-metrics.mjs     界面度量：页面高度、各区高度、超长文本、偏小按钮、横向溢出
-check-console-notify-ui.mjs  通知渠道界面 + 命中重推的验收：真浏览器 + 桩 supervisor，不碰闲鱼
+```bash
+npm test
 ```
 
-跑测试：`npm test`（不需要 Playwright 浏览器内核，也不需要登录）。
+核心代码位于 `src/`，测试位于 `test/`，部署文件位于 `deploy/`。运行时只依赖纯 JavaScript 包；Playwright 仅用于控制台验收脚本。
 
 ## 许可证
 
-[MIT](LICENSE) © 2026 timefunnel。
+[MIT](LICENSE) © 2026 timefunnel
 
-**但要说清一件事**：MIT 授予的是**代码**的使用、修改、分发权利，它**不会**让「用这个工具去跑闲鱼」这件事变得合规。开源许可解决的是著作权问题，平台服务条款是另一回事——README 开头的免责声明与「风险与合规」一节仍然完全适用。
-
-另外，本仓库的代码没有拷贝任何第三方项目：调研过的最有用的那个闲鱼客户端是 GPL-3.0，只借鉴了「协议长什么样」，实现是独立写的；调研期间下载的第三方 README / 源码一律留在 `.gitignore` 里，不随本仓库分发。
+MIT 许可证只授权代码的使用、修改和分发，不代表通过本工具访问闲鱼符合平台服务条款。
