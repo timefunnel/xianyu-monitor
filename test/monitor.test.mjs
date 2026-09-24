@@ -43,18 +43,30 @@ const monitorRef = { value: null };
 /** 运行若干轮后自动停止，返回捕获到的通知请求。 */
 async function runRounds(
   rounds,
-  { filters = { maxPrice: 3200 }, maxPerCycle = 8, fetchStatus = 200, loggerLevel = 'error', notifyEnabled, taskNotify } = {},
+  {
+    filters = { maxPrice: 3200 },
+    maxPerCycle = 8,
+    fetchStatus = 200,
+    loggerLevel = 'error',
+    notifyEnabled,
+    taskNotify,
+    channels,
+    /** URL 里含任一片段的请求视为失败，用来构造"部分渠道挂了"。 */
+    failUrls = [],
+    logger,
+  } = {},
 ) {
   const requests = [];
   const originalFetch = globalThis.fetch;
   globalThis.fetch = async (url, init) => {
     requests.push({ url: String(url), body: init?.body ? JSON.parse(init.body) : null });
-    return { ok: fetchStatus < 400, status: fetchStatus, text: async () => (fetchStatus < 400 ? '' : 'boom') };
+    const broken = fetchStatus >= 400 || failUrls.some((fragment) => String(url).includes(fragment));
+    return { ok: !broken, status: broken ? 500 : 200, text: async () => (broken ? 'boom' : '') };
   };
 
   const config = withDefaults({
     notify: {
-      channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }],
+      channels: channels ?? [{ type: 'webhook', url: 'https://notify.invalid/hook' }],
       maxPerCycle,
       ...(notifyEnabled === undefined ? {} : { enabled: notifyEnabled }),
     },
@@ -78,7 +90,7 @@ async function runRounds(
     config,
     store,
     browser,
-    logger: createLogger({ level: loggerLevel }),
+    logger: logger ?? createLogger({ level: loggerLevel }),
     onNotified: (entry, _task, options) => recorded.push({ id: entry.id, pushed: options?.pushed !== false }),
   });
   monitorRef.value = monitor;
@@ -487,4 +499,36 @@ test('被直接拒绝且没有可复位的 cookie 时，才走长时间退避', 
 
   const gap = callTimes[1] - callTimes[0];
   assert.ok(gap >= 2800, `没有可复位的东西说明重试无意义，应走长退避，实际 ${gap}ms`);
+});
+
+test('已知缺口：部分渠道失败时该商品仍被标记为已处理，失败的渠道不会再收到它', async () => {
+  // 这条钉住的是**当前**行为，不是理想行为：去重是按「商品」记账的，所以「任一渠道成功」就记账，
+  // 失败那个渠道永久收不到这条命中。改成「按渠道记账」时这条会失败——那正是回来更新它的信号。
+  const logs = [];
+  const logger = {
+    info: (...args) => logs.push(args.join(' ')),
+    warn: (...args) => logs.push(args.join(' ')),
+    error: (...args) => logs.push(args.join(' ')),
+    debug: () => {},
+  };
+
+  const { store, requests } = await runRounds([[item()], [item()]], {
+    channels: [
+      { type: 'webhook', url: 'https://notify.invalid/ok' },
+      { type: 'webhook', url: 'https://notify.invalid/broken' },
+    ],
+    failUrls: ['/broken'],
+    logger,
+  });
+
+  assert.equal(requests.filter((entry) => entry.url.includes('/ok')).length, 1, '成功的渠道投递一次');
+  assert.equal(requests.filter((entry) => entry.url.includes('/broken')).length, 1, '失败的渠道也尝试过');
+  assert.equal(store.has('812345678901'), true, '当前行为：任一渠道成功就记为已处理');
+
+  // 但至少不能撒谎：日志必须点名失败的渠道，而不是笼统地写「已推送」。
+  const partial = logs.find((line) => /个渠道失败/.test(line));
+  assert.ok(partial, `部分失败必须有明确的告警日志，实际日志：\n${logs.join('\n')}`);
+  assert.match(partial, /1\/2 个渠道失败/);
+  assert.match(partial, /webhook#1/, '同类型多渠道要带下标，否则分不清是哪一个');
+  assert.match(partial, /不会再收到它/, '要说清后果，而不是只报个错');
 });

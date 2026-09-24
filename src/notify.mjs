@@ -327,11 +327,13 @@ async function toResult(type, response) {
  * @param {any[]} channels 渠道配置列表。
  * @param {{title: string, body: string, url?: string, group?: string}} message 消息。
  * @param {{timeoutMs?: number, logger?: any, fetchImpl?: typeof fetch}} [options] 超时、日志与 fetch 实现。
- * @returns {Promise<Array<{type: string, ok: boolean, error?: string}>>} 每个渠道的结果。
+ * @returns {Promise<Array<{index: number, type: string, ok: boolean, error?: string}>>} 每个渠道的结果；`index` 是它在配置里的下标，同类型多渠道时用来分辨是哪一个。
  */
 export async function sendAll(channels, message, options = {}) {
   const results = await Promise.all(
-    channels.map((channel) => sendToChannel(channel, message, { timeoutMs: options.timeoutMs, fetchImpl: options.fetchImpl })),
+    channels.map((channel, index) =>
+      sendToChannel(channel, message, { timeoutMs: options.timeoutMs, fetchImpl: options.fetchImpl }).then((result) => ({ ...result, index })),
+    ),
   );
   for (const result of results) {
     if (result.ok) options.logger?.debug?.(`通知已送达 ${result.type}`, 'notify');

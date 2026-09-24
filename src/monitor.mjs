@@ -14,6 +14,16 @@ const EMPTY_STREAK_WARNING = 5;
 const SAFE_REQUESTS_PER_MINUTE = 2;
 
 /**
+ * 把失败的投递结果描述成「渠道（原因）」。同类型的多个渠道带上配置下标，否则日志里分不清是哪一个。
+ * @param {{index?: number, type: string, error?: string}} result 投递结果。
+ * @returns {string} 可读描述。
+ */
+function describeFailure(result) {
+  const where = Number.isInteger(result.index) ? `${result.type}#${result.index}` : result.type;
+  return `${where}${result.error ? `（${result.error}）` : ''}`;
+}
+
+/**
  * @typedef {object} TaskStats
  * @property {number} cycles 轮询次数。
  * @property {number} scanned 扫到的商品条数。
@@ -479,15 +489,31 @@ export class Monitor {
         timeoutMs: this.config.notify.timeoutMs,
         logger: this.logger,
       });
-      if (results.some((result) => result.ok)) {
+      const failed = results.filter((result) => !result.ok);
+      if (failed.length < results.length) {
         this.store.add(item.id);
         state.notified += 1;
         this.onNotified?.(item, task);
         // 历史已经写了，计数也立刻落盘，两者不会因为一次重启而分叉。
         this.#syncTotals(task, state);
-        this.logger.info(`命中并已推送：¥${item.price ?? '?'} ${item.title}`, task.name, item.url);
+        if (failed.length === 0) {
+          this.logger.info(`命中并已推送：¥${item.price ?? '?'} ${item.title}`, task.name, item.url);
+        } else {
+          // 部分失败必须点名。去重是按**商品**记的，这条一旦记为已处理，失败的渠道就不会再收到它；
+          // 以前这里照样打「已推送」，等于把丢推送这件事藏了起来。
+          this.logger.warn(
+            `命中已推送，但 ${failed.length}/${results.length} 个渠道失败（${failed.map(describeFailure).join('；')}）；` +
+              '该商品已记为已处理，这些渠道不会再收到它',
+            task.name,
+            item.url,
+          );
+        }
       } else {
-        this.logger.error('所有渠道推送失败，本条将在下一轮重试', task.name, item.id);
+        this.logger.error(
+          `所有渠道推送失败（${results.map(describeFailure).join('；')}），本条将在下一轮重试`,
+          task.name,
+          item.id,
+        );
       }
     }
 
@@ -498,13 +524,26 @@ export class Monitor {
         { title: `还有 ${overflow.length} 条命中 · ${task.name}`, body },
         { timeoutMs: this.config.notify.timeoutMs, logger: this.logger },
       );
-      if (results.some((result) => result.ok)) {
+      const failed = results.filter((result) => !result.ok);
+      if (failed.length < results.length) {
         for (const item of overflow) {
           this.store.add(item.id);
           this.onNotified?.(item, task);
         }
         state.notified += overflow.length;
         this.#syncTotals(task, state);
+        if (failed.length > 0) {
+          this.logger.warn(
+            `汇总推送已发出，但 ${failed.length}/${results.length} 个渠道失败（${failed.map(describeFailure).join('；')}）；` +
+              `这 ${overflow.length} 条不会再重发`,
+            task.name,
+          );
+        }
+      } else {
+        this.logger.error(
+          `汇总推送所有渠道都失败（${results.map(describeFailure).join('；')}），这 ${overflow.length} 条将在下一轮重试`,
+          task.name,
+        );
       }
     }
   }

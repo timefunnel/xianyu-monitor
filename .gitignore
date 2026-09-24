@@ -21,6 +21,8 @@ _licenses.json
 _issues/
 _readmes/
 _src/
+# 调研时下载的第三方源码与许可证原文：不随仓库分发（报告里保留了路径与行号可复核）
+_research/
 
 # 调试产物
 dump-*.json
