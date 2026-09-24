@@ -38,6 +38,7 @@ writeFileSync(
   'utf8',
 );
 
+const calls = [];
 const supervisor = {
   configPath,
   subscribe: () => () => {},
@@ -57,8 +58,14 @@ const supervisor = {
   check: async () => ({ ok: true, results: [] }),
   testNotify: async () => ({ ok: true, results: [{ type: 'bark', ok: true }] }),
   saveNotify: async () => ({ ok: true }),
-  repushHit: async () => ({ ok: true, results: [{ type: 'bark', ok: true }] }),
-  openItem: async () => ({ ok: true }),
+  repushHit: async (id) => {
+    calls.push(['repushHit', id]);
+    return { ok: true, results: [{ type: 'bark', ok: true }] };
+  },
+  openItem: async (id) => {
+    calls.push(['openItem', id]);
+    return { ok: true };
+  },
   loginWithQr: async () => ({ ok: true }),
   setNotify: async () => ({ ok: true }),
   setTaskEnabled: async () => ({ ok: true }),
@@ -126,6 +133,20 @@ try {
   const repush = await page.locator('#hits .hit button', { hasText: '重推' }).count();
   check(rows === 1, '命中历史有 1 行', `实际 ${rows}`);
   check(repush === 1, '命中行上有「重推」按钮', `实际 ${repush}`);
+
+  // 光有按钮不算数：点下去，请求要真的到服务端，并且给出提示。
+  await page.locator('#hits .hit button', { hasText: '重推' }).click();
+  await page.waitForTimeout(700);
+  const repushCalls = calls.filter((entry) => entry[0] === 'repushHit');
+  check(repushCalls.length === 1 && repushCalls[0][1] === '1', '点「重推」把商品 id 发到了服务端', JSON.stringify(repushCalls));
+  const toastText = await page.locator('.toast .toast-text').allInnerTexts();
+  check(toastText.some((text) => /已重新推送/.test(text)), '重推成功后给出提示', toastText.join(' / ') || '(没有提示)');
+  // 按钮必须吃掉 click，否则会连带触发整行的「打开商品」
+  check(
+    calls.filter((entry) => entry[0] === 'openItem').length === 0,
+    '点「重推」没有连带打开商品页',
+    JSON.stringify(calls.filter((entry) => entry[0] === 'openItem')),
+  );
   // ---- 老进程场景：前端新、服务端旧（/api/state 里没有 channelTypes）----
   const stale = { ...supervisor, snapshot: () => ({ ...supervisor.snapshot(), channelTypes: undefined }) };
   const staleConsole = await startWebConsole({ supervisor: stale, port: 0, host: '127.0.0.1', token: '', logger: { info() {}, warn() {}, error() {} }, openBrowser: false });
