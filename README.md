@@ -638,6 +638,7 @@ diagnose-risk.mjs        风控体检：一次页面加载判定是限流、会�
 clean-test-residue.mjs   清理验收脚本留下的测试任务在命中历史与去重表里的记录（默认只预览，--dry-run）
 check-ui-metrics.mjs     界面度量：页面高度、各区高度、超长文本、偏小按钮、横向溢出
 check-publish-dropdown.mjs  browser 模式「新发布」下拉的离线验收（**已弃用路径**，保留备查）
+check-console-notify-ui.mjs  通知渠道界面 + 命中重推的验收：真浏览器 + 桩 supervisor，不碰闲鱼
 ```
 
 跑测试：`npm test`（不需要 Playwright 浏览器内核，也不需要登录）。

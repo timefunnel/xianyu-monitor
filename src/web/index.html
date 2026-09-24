@@ -787,6 +787,9 @@
   .form-group { display: grid; gap: 12px; grid-template-columns: 1fr 1fr; }
   .field { min-width: 0; }
   .field.wide { grid-column: 1 / -1; }
+  /* 动态渲染的字段容器必须 display:contents：否则它自己会成为 .form-group 网格里的
+     一个格子，里面的 .field.wide 再宽也只能占那一格（实测输入框被压到 305px）。 */
+  #channelFields { display: contents; }
   .field-label { display: block; font-size: 12.5px; margin-bottom: 4px; }
   .field-label .req { color: var(--red); }
   .input {
@@ -1107,7 +1110,7 @@
 
 <!-- 通知渠道编辑弹层（字段由 /api/state 下发的 channelTypes 渲染，保存走 PUT /api/notify） -->
 <div class="mask" id="channelMask" hidden>
-  <div class="modal" role="dialog" aria-modal="true" aria-labelledby="channelTitle">
+  <div class="modal modal-wide" role="dialog" aria-modal="true" aria-labelledby="channelTitle">
     <div class="modal-head">
       <h3 id="channelTitle">添加通知渠道</h3>
       <button class="modal-close" type="button" id="channelX" aria-label="关闭"><svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg></button>
@@ -2682,24 +2685,28 @@ async function loadConfig() {
   const area = $('configArea');
   const save = $('configSave');
   setBusy(save, true, '读取中…');
+  // 字段定义先取、且单独兜错：即使配置原文读失败，通知渠道区也该给出可读提示而不是整块空白。
+  if (channelTypes.length === 0) {
+    try {
+      const state = await api('/api/state');
+      channelTypes = Array.isArray(state.channelTypes) ? state.channelTypes : [];
+    } catch {
+      channelTypes = [];
+    }
+  }
   try {
     const data = await api('/api/config');
     $('configPath').textContent = data.path ? '配置文件：' + data.path : '配置文件路径未知';
     area.value = JSON.stringify(data.config === undefined ? {} : data.config, null, 2);
     configDirty = false;
     $('configProblems').hidden = true;
-    // 通知渠道也从这份配置里取；字段定义只取一次（它是服务端的静态表）。
     const cfg = data.config && typeof data.config === 'object' ? data.config : {};
     configChannels = Array.isArray(cfg.notify && cfg.notify.channels) ? cfg.notify.channels.slice() : [];
-    if (channelTypes.length === 0) {
-      const state = await api('/api/state');
-      channelTypes = Array.isArray(state.channelTypes) ? state.channelTypes : [];
-    }
-    renderChannels();
   } catch (error) {
     showError(error);
     $('configPath').textContent = '配置文件读取失败';
   } finally {
+    renderChannels();
     setBusy(save, false, '保存');
   }
 }
@@ -2731,6 +2738,12 @@ function maskSecret(value) {
 function renderChannels() {
   const box = $('channelList');
   box.textContent = '';
+  // 前端是从磁盘读的，服务端却要重启进程才生效。老进程下 /api/state 里没有 channelTypes，
+  // 这时候必须明确说出来——否则给一个连字段都没有的空弹层，看起来就像"按钮点了没反应"。
+  if (channelTypes.length === 0) {
+    box.appendChild(el('div', 'empty', '没读到渠道字段定义（/api/state 里没有 channelTypes）——服务端代码要重启进程才生效：重启控制台后刷新本页。'));
+    return;
+  }
   if (configChannels.length === 0) {
     box.appendChild(el('div', 'empty', '还没有通知渠道，点下面的「添加渠道」加一个'));
     return;
@@ -2827,6 +2840,10 @@ function setChannelField(field, raw) {
 }
 
 function openChannelEditor(index) {
+  if (channelTypes.length === 0) {
+    showToast('err', '没读到渠道字段定义，先重启控制台进程再刷新本页');
+    return;
+  }
   editingChannel = index;
   const existing = index >= 0 ? configChannels[index] : null;
   channelDraft = existing ? JSON.parse(JSON.stringify(existing)) : { type: (channelTypes[0] || {}).type || 'webhook' };
