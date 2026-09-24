@@ -230,7 +230,21 @@ const commands = {
     logger.info(`通知渠道 ${config.notify.channels.length} 个：${config.notify.channels.map((channel) => channel.type).join(', ')}`);
 
     const profile = config.browser.userDataDir;
-    logger.info(`profile 目录：${profile}（${existsSync(profile) ? '已存在' : '不存在，需要先执行 npm run login'}）`);
+    const httpMode = config.search?.mode !== 'browser';
+    if (httpMode) {
+      // http 模式下监控不启浏览器，登录态就在这个文件里；profile 只是"登录那一步"的落点。
+      const cookieFile = config.search?.cookieFile ?? defaultCookieFile(config);
+      const hasCookies = existsSync(cookieFile);
+      logger.info(`登录态文件：${cookieFile}（${hasCookies ? '已存在' : '不存在'}）`);
+      if (!hasCookies) {
+        logger.warn(
+          '没有登录态文件。最省事的做法：在任意一台有浏览器的机器上跑 npm run login，' +
+            `再把生成的 cookies.json 拷到这里（${cookieFile}）——服务器上因此不必装浏览器，也不用 Xvfb。`,
+        );
+      }
+    } else {
+      logger.info(`profile 目录：${profile}（${existsSync(profile) ? '已存在' : '不存在，需要先执行 npm run login'}）`);
+    }
     logger.info(`状态文件：${config.storage.stateFile}（${existsSync(config.storage.stateFile) ? '已存在' : '首次运行后创建'}）`);
 
     let playwright = '不可用';
@@ -240,13 +254,17 @@ const commands = {
     } catch {
       playwright = '不可用（执行 npm install）';
     }
-    logger.info(`Playwright：${playwright}`);
+    logger.info(
+      httpMode
+        ? `Playwright：${playwright} —— http 模式下监控用不到它，只有 login / export-cookies / 点开看商品需要`
+        : `Playwright：${playwright}`,
+    );
 
     if (config.browser.headless) {
-      logger.warn('headless 为 true：闲鱼会识别无头浏览器并返回「非法访问」页，搜索会拿不到任何结果。请改为 false，服务器上用 xvfb-run 启动。');
+      logger.warn('headless 为 true：扫码登录时闲鱼会返回「非法访问」页、二维码不会渲染。监控本身不启浏览器（http 模式），所以这一项只影响 login。');
     }
-    if (process.platform !== 'win32' && process.platform !== 'darwin' && !process.env.DISPLAY && !config.browser.headless) {
-      logger.warn('当前没有 $DISPLAY，浏览器无法以有头模式启动。请用 xvfb-run -a node src/cli.mjs run 启动。');
+    if (process.platform !== 'win32' && process.platform !== 'darwin' && !process.env.DISPLAY && config.search?.mode !== 'browser') {
+      logger.info('当前没有 $DISPLAY：监控不需要它（http 模式不启浏览器），只有扫码登录要跑在 xvfb-run 下。');
     }
     logger.info('配置校验通过。');
   },
@@ -258,7 +276,8 @@ const commands = {
    * 落盘，所以从浏览器方案切过来**不必重新扫码**。扫码登录成功后也会自动落盘。
    */
   async 'export-cookies'({ config }, logger) {
-    const browser = await createBrowser(config, logger);
+    // 不导航、不渲染，所以强制无头：服务器上没有 $DISPLAY 也能导出，不必为这一步套 xvfb-run。
+    const browser = await createBrowser(config, logger, { headless: true });
     try {
       const file = config.search?.cookieFile ?? defaultCookieFile(config);
       const { count, missing } = await browser.exportCookies(new FileCookieStore({ file, logger }));

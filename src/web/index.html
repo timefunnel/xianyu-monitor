@@ -1631,12 +1631,17 @@ function mergeHits(list) {
 /** 命中行要用哪种跳转链接取决于设备：App 深链只有手机上的闲鱼能接。 */
 const IS_MOBILE = /Android|iPhone|iPad|iPod|Windows Phone|Mobile/i.test(navigator.userAgent);
 
+/** 控制台是不是就跑在本机。跑在服务器 / NAS 上时，服务端那个浏览器窗口用户根本看不见。 */
+const IS_LOCAL_CONSOLE = ['localhost', '127.0.0.1', '::1', ''].includes(location.hostname);
+
 /**
  * 打开一条命中。
  *
- * 电脑上优先让**监控自己那个已登录的浏览器窗口**打开商品页：桌面浏览器直接开闲鱼网页是
- * 未登录的，而登录态在监控的 Chrome profile 里，借它的窗口打开才带登录状态。
- * 服务端说打不开（无头运行、浏览器没起来）就退回自己这个浏览器里打开，不让点击落空。
+ * 电脑上**且控制台就在本机**时，优先让监控自己那个已登录的浏览器窗口打开商品页：桌面浏览器
+ * 直接开闲鱼网页是未登录的，而登录态在监控的 Chrome profile 里，借它的窗口打开才带登录状态。
+ *
+ * 但控制台跑在服务器 / NAS 上时不能这么做——那个浏览器开在服务器上，用户屏幕上什么都不会出现，
+ * 点了像没反应。所以远端访问一律直接在本机浏览器里打开。
  *
  * 手机上直接走原来的逻辑（App 深链）。
  *
@@ -1644,7 +1649,7 @@ const IS_MOBILE = /Android|iPhone|iPad|iPod|Windows Phone|Mobile/i.test(navigato
  * @param {string} primary 已经按设备选好的链接。
  */
 async function openHit(item, primary) {
-  if (!IS_MOBILE && item.id) {
+  if (!IS_MOBILE && IS_LOCAL_CONSOLE && item.id) {
     try {
       const result = await api('/api/open-item', {
         method: 'POST',

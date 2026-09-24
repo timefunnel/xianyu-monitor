@@ -10,7 +10,8 @@ WORKDIR /app
 
 COPY package.json ./
 # 先装依赖再拷源码，源码改动不会让依赖层失效。
-# xvfb + xauth：闲鱼会识别无头浏览器，容器里必须提供虚拟显示。
+# xvfb + xauth：扫码登录必须跑在有头模式下（闲鱼对无头请求返回「非法访问」页，二维码不渲染）。
+# 监控本身不需要它们——http 模式不启浏览器。
 RUN apt-get update \
     && apt-get install -y --no-install-recommends xvfb xauth \
     && npm install --omit=dev --no-audit --no-fund \

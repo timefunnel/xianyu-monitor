@@ -150,6 +150,59 @@ node src/cli.mjs once --task macbook-air-m2 --notify   # 确认无误后再真�
 
 服务器没有图形界面，而扫码登录需要真实的有头浏览器，因此**登录那一步要跑在 `xvfb-run` 下**（Compose 镜像的 entrypoint 已经自动包了一层）。监控本身不启浏览器，长时间运行不需要图形界面。
 
+### 完全没有浏览器也能跑
+
+**监控侧一个浏览器都不需要。** 浏览器只在「扫码登录」和「点开看商品」用到，而登录可以做在别的机器上——登录态就是一个小文件：
+
+```bash
+# ① 在你自己的电脑上（有浏览器的那台）
+npm run login                  # 扫码，成功后会写出 data/cookies.json
+
+# ② 把这个文件拷到服务器（几 KB），位置就是配置里的 data/cookies.json
+scp data/cookies.json  用户@服务器:/opt/xianyu-monitor/data/cookies.json
+scp config.json        用户@服务器:/opt/xianyu-monitor/config.json
+scp .env               用户@服务器:/opt/xianyu-monitor/.env
+
+# ③ 服务器上直接跑，不需要 Chromium、不需要 Xvfb
+npm install --omit=dev         # 只装 Node 依赖；不用执行 npx playwright install
+node src/cli.mjs check         # 会明确告诉你：http 模式下监控用不到 Playwright
+node src/cli.mjs web
+```
+
+这样服务器上省掉 **Chromium（约 150MB）+ Xvfb + profile 目录（约 200MB）**，只剩一个 Node 进程。代价是**会话过期时要重新走一遍①②**（平台要求扫码，躲不掉）。
+
+> 这条路之所以现在才成立，是因为登录态从「浏览器 profile」改成了「`cookies.json` 一个文件」——以前要拷 200MB 的 profile，还得两边架构/版本接近；现在是一个几 KB 的 JSON，跨平台直接可用。
+
+想连这一步都省掉（在无图形界面的服务器上直接扫码），需要在服务端实现 passport 的二维码登录（纯 HTTP）+ 自己渲染二维码。那是另一件事，见下方「还能不能更进一步」。
+
+### 服务器上到底需要什么
+
+| 需要 | 什么时候用 | 说明 |
+| --- | --- | --- |
+| **Node.js ≥ 20.11** | 一直 | 只用内置模块；`npm install` 之后只有一个运行时依赖（Playwright） |
+| `data/cookies.json` | 监控运行期间 | **登录态就在这里**，靠 volume 挂载持久化 |
+| **Xvfb**（或任意 `$DISPLAY`） | **只有扫码登录那一步** | 无头模式下闲鱼返回「非法访问」、二维码不渲染。监控不需要它 |
+| Chromium / Chrome | 同上 | 只为登录开一次；不装也行，改用系统已装的浏览器（`browser.channel: "chrome"`） |
+
+由此得到的几条现实结论：
+
+- **监控常驻的资源占用很小**：没有 Chrome、没有 Xvfb，只有一个 Node 进程，外加每轮 1 次 HTTPS 请求。
+- **服务器上把 `web.open` 设成 `false`**，否则每次启动都会去调系统浏览器打开页面（没有 `xdg-open` 也不会崩，但那是个没必要的动作）。
+- **时区**：通知里的相对时间（"3 分钟前"）与时区无关，只有少数带绝对时间的文案受影响。宿主机是 UTC 时建议设 `TZ=Asia/Shanghai`（systemd 单元与 compose 里都给上了）。
+- **远端访问控制台**必须同时设 `web.host` 与 `web.token`，否则程序拒绝监听（见「远程访问」）。
+- **远端访问时，「点开看商品」直接在你的浏览器里打开**——不会再让服务器上那个你看不见的浏览器去开。
+- **登录态过期后要重新扫码**，这一步绕不开（平台要求），仍然需要 `xvfb-run`。
+
+### 还能不能更进一步（把浏览器也去掉）
+
+剩下的浏览器用途只有两处：**扫码登录**，以及上面那条「点开看商品」的便利（远端访问时已经自动绕过）。
+
+要把扫码登录也做成纯 HTTP，得在服务端自己走 passport 的二维码流程：调接口拿二维码 → 轮询扫码结果 → 收 `Set-Cookie`。技术上可行，开源客户端里就有这么做的；但要额外解决「**把二维码画出来给手机扫**」——终端 ASCII 或前端渲染，都得先有二维码编码器。
+
+**现在没做的原因有两条**：一是这属于「调用未公开接口」，与本项目「不逆向接口」的自我约束有张力；二是这类改动**必须用真实扫码验证**才算数，在风控正紧的时候去试登录流程不划算。
+
+在那之前，**「拷 `cookies.json`」已经让服务器完全不需要浏览器**，覆盖了绝大多数部署场景。
+
 ### 方式一：Docker Compose（推荐）
 
 ```bash

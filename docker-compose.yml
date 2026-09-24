@@ -5,6 +5,9 @@ services:
     restart: unless-stopped
     env_file:
       - .env
+    environment:
+      # 通知里的时间按这个时区显示；宿主机是 UTC 时不设会看到差 8 小时的时间戳。
+      TZ: ${TZ:-Asia/Shanghai}
     volumes:
       # 配置只读挂载；data 目录必须可写，登录态与去重表都在里面。
       # 首次部署前执行：mkdir -p data config.json 所在目录可写，并保证 data 对容器内 uid 1000 可写：

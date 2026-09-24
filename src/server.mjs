@@ -23,6 +23,24 @@ const MAX_BODY_BYTES = 1024 * 1024;
 const SSE_HEARTBEAT_MS = 20000;
 
 /**
+ * 启动一个分离的子进程，并且**保证失败不会带走自己**。
+ *
+ * `spawn` 对「命令不存在」（ENOENT）不是同步抛错，而是异步 `emit('error')`；没有监听器时
+ * Node 会把它当成未捕获异常，直接把整个进程干掉。服务器上（slim 镜像没装 `xdg-utils`）
+ * 正好命中这个分支——只是想自动开个页面，却把控制台带崩了。
+ *
+ * @param {string} command 可执行文件。
+ * @param {string[]} args 参数。
+ * @returns {import('node:child_process').ChildProcess} 子进程（可能已经出错，但不影响本进程）。
+ */
+export function spawnDetached(command, args) {
+  const child = spawn(command, args, { detached: true, stdio: 'ignore' });
+  child.on('error', () => {});
+  child.unref();
+  return child;
+}
+
+/**
  * 打开系统默认浏览器。失败不影响服务本身——服务器上没有图形界面时这一定失败。
  * @param {string} url 要打开的地址。
  */
@@ -30,9 +48,9 @@ function openBrowser(url) {
   const command = process.platform === 'win32' ? 'cmd' : process.platform === 'darwin' ? 'open' : 'xdg-open';
   const args = process.platform === 'win32' ? ['/c', 'start', '', url] : [url];
   try {
-    spawn(command, args, { detached: true, stdio: 'ignore' }).unref();
+    spawnDetached(command, args);
   } catch {
-    // 服务器上通常没有桌面环境，这里失败是预期行为。
+    // 本地没有桌面环境时失败是预期行为。
   }
 }
 
