@@ -8,6 +8,7 @@
 
 import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
+import { writeFileAtomic } from './fileio.mjs';
 import { withDefaults } from './config.mjs';
 import { FileCookieStore, defaultCookieFile } from './cookies.mjs';
 import { qrLogin } from './qrlogin.mjs';
@@ -588,9 +589,9 @@ export class Supervisor {
     const problems = validateConfig(resolved);
     if (problems.length > 0) return { ok: false, problems };
     try {
-      const temp = `${this.configPath}.tmp`;
-      writeFileSync(temp, `${JSON.stringify(rawConfig, null, 2)}\n`, 'utf8');
-      renameSync(temp, this.configPath);
+      // 容器里 config.json 常被单文件 bind mount 进来，rename 覆盖挂载点会 EBUSY；
+      // writeFileAtomic 会退化处理，并把「为什么退化」记进日志。
+      writeFileAtomic(this.configPath, `${JSON.stringify(rawConfig, null, 2)}\n`, { logger: this.logger });
     } catch (error) {
       return { ok: false, problems: [error.message] };
     }

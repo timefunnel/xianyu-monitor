@@ -9,19 +9,22 @@ services:
       # 通知里的时间按这个时区显示；宿主机是 UTC 时不设会看到差 8 小时的时间戳。
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      # 配置只读挂载；data 目录必须可写，登录态与去重表都在里面。
-      # 首次部署前执行：mkdir -p data config.json 所在目录可写，并保证 data 对容器内 uid 1000 可写：
-      #   mkdir -p data && sudo chown -R 1000:1000 data
-      - ./config.json:/app/config.json:ro
+      # config.json **不能挂成 :ro**：控制台里改配置/切任务都要写它，只读挂载下会失败。
+      # 而且单文件挂载的挂载点无法被 rename 覆盖，保存时会报
+      # `EBUSY: rename '/app/config.json.tmp' -> '/app/config.json'`——代码里已对这种情形
+      # 退化为直接写入，代价是失去"原子替换"。想保留原子性就把**目录**挂进去。
+      # 首次部署前保证 data 与 config.json 对容器内 uid 1000 可写：
+      #   mkdir -p data && sudo chown -R 1000:1000 data config.json
+      - ./config.json:/app/config.json
       - ./data:/app/data
     logging:
       driver: json-file
       options:
         max-size: "10m"
         max-file: "3"
-    # 想用图形控制台就取消注释，并把 command 换成 web（记得在 config.json 里设 web.token）
+    # 想用图形控制台就取消注释，并把 command 换成 web（记得在 config.json 里设 web.password）
     # ports:
-    #   - "7788:7788"
+    #   - "127.0.0.1:7788:7788"
     # command: ["node", "src/cli.mjs", "web", "--no-open"]
 
 # 常用操作：

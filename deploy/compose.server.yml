@@ -26,7 +26,14 @@ services:
       TZ: Asia/Shanghai
       XIANYU_CONFIG: /app/config.json
     volumes:
-      - ./config.json:/app/config.json:ro
+      # config.json 必须**可写**，否则控制台里改配置/切任务会失败——而且报的是
+      # `EBUSY: rename '/app/config.json.tmp' -> '/app/config.json'`，跟配置内容毫无关系。
+      # 原因：单文件 bind mount 的挂载点无法被 rename 覆盖。代码里已经对这种情形退化为直接写，
+      # 但那时就不能带 :ro（只读挂载连直接写也不行）。
+      #
+      # 想保留"原子替换"（写临时文件再改名）就把**目录**挂进去，例如：
+      #   - ./conf:/app/conf          # 并把 XIANYU_CONFIG 指到 /app/conf/config.json
+      - ./config.json:/app/config.json
       - ./data:/app/data
     # 只绑本机：公网入口交给宿主机上的 OpenResty（1Panel），容器不直接暴露。
     ports:

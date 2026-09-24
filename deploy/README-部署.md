@@ -58,6 +58,22 @@ BARK_KEY=<通知渠道密钥>
 > ```
 > `config.json` 里只有 `${VAR}` 占位符、没有明文密钥，`data/cookies.json` 才是要护住的那个。
 
+> **别把 config.json 挂成 `:ro`（第二个实测坑）**：控制台里改配置、切任务、改通知渠道全都要写这个文件。
+> 只读挂载下会失败，而且单文件挂载的**挂载点无法被 `rename` 覆盖**，报错是
+> `EBUSY: resource busy or locked, rename '/app/config.json.tmp' -> '/app/config.json'`——
+> 看起来像配置内容有问题，其实是挂载方式的问题。
+>
+> 代码已对这种情形退化为**直接写入**（拿掉原子性，见 `src/fileio.mjs`），所以去掉 `:ro` 即可用。
+> 想保留原子替换就把**目录**挂进去：
+>
+> ```yaml
+> volumes:
+>   - ./conf:/app/conf            # 里面放 config.json
+>   - ./data:/app/data
+> environment:
+>   XIANYU_CONFIG: /app/conf/config.json
+> ```
+
 ## 3. 起服务
 
 ```bash
