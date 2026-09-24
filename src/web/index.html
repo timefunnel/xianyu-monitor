@@ -513,7 +513,31 @@
     overflow: hidden;
   }
   .hit-meta { margin-top: 4px; font-size: 12px; color: var(--muted); word-break: break-word; }
-  .hit-open { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); font-size: 12px; padding-top: 4px; white-space: nowrap; }
+  /* 行内动作簇：重推与「打开」并排，共用同一套小字语言。
+     重推原来是直接把 .btn-mini 塞进行里——描边 + 实心面板的按钮，在一条安静的行里太突兀。
+     但可点区域仍守 32×44 的下限（check-ui-metrics.mjs 会量），收掉的只是填充与描边：
+     平时只有一行淡灰小字，悬停才浮出来。 */
+  .hit-actions { flex: none; display: inline-flex; align-items: center; gap: 8px; padding-top: 4px; }
+  .hit-open { flex: none; display: inline-flex; align-items: center; gap: 3px; color: var(--accent); font-size: 12px; white-space: nowrap; }
+  .hit-action {
+    display: inline-flex;
+    align-items: center;
+    justify-content: center;
+    gap: 3px;
+    min-height: 32px;
+    min-width: 44px;
+    padding: 4px 8px;
+    border: 1px solid transparent;
+    background: none;
+    cursor: pointer;
+    color: var(--muted);
+    font-size: 12px;
+    white-space: nowrap;
+    border-radius: var(--radius-sm);
+  }
+  .hit-action:hover { color: var(--accent); border-color: var(--border); background: var(--bg-hover); }
+  .hit-action:disabled { opacity: .55; cursor: default; }
+  .hit-action svg { width: 12px; height: 12px; }
   .hit-open svg { width: 12px; height: 12px; }
 
   /* ---------- 立即检查结果 ---------- */
@@ -1677,22 +1701,29 @@ function createItemRow(item, options) {
   const preferApp = IS_MOBILE && Boolean(appLink);
   const primary = preferApp ? appLink : webLink || appLink;
 
+  // 右侧动作簇：小字、无边框，和「打开」并排成一组，不再是一个孤零零的实心按钮。
+  const actions = el('div', 'hit-actions');
+
   // 手动重推：翻历史时看到还不错的，不必再去手机通知里把它翻出来。
   // 必须吃掉 click，否则会连带触发整行的「打开商品」。
   if (item.id) {
-    const repush = el('button', 'btn btn-mini', '重推');
+    const repush = el('button', 'hit-action');
     repush.type = 'button';
     repush.title = '把这条再推到通知渠道（不受静默开关影响）';
+    // 图标在外、文案包在 <span> 里：setBusy 只改那个 span，不会把图标一起清掉。
+    repush.innerHTML = ICONS.repush + '<span>重推</span>';
     repush.addEventListener('click', (event) => {
       event.stopPropagation();
       repushHit(item, repush);
     });
-    row.appendChild(repush);
+    actions.appendChild(repush);
   }
 
   const openMark = el('div', 'hit-open', preferApp ? '用 App 打开' : '打开');
   openMark.innerHTML += ICONS.open;
-  row.appendChild(openMark);
+  actions.appendChild(openMark);
+
+  row.appendChild(actions);
 
   if (primary) {
     const open = () => openHit(item, primary);
@@ -3518,6 +3549,8 @@ const THEME_ICON = {
 const ICONS = {
   close: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M18 6 6 18M6 6l12 12"/></svg>',
   open: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M7 17 17 7"/><path d="M8 7h9v9"/></svg>',
+  /** 重推：纸飞机，表示"再发一次"。 */
+  repush: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="m22 2-7 20-4-9-9-4Z"/><path d="M22 2 11 13"/></svg>',
   bell: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>',
   bellOff: '<svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M8.7 3.4A6 6 0 0 1 18 8c0 2.5.4 4.3.9 5.5"/><path d="M17 17H3s3-2 3-9c0-.6.1-1.2.3-1.7"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/><path d="m2 2 20 20"/></svg>',
 };
@@ -3578,7 +3611,7 @@ const ROUTES = {
   tasks: { title: '任务', sub: '盯哪个关键词、按什么条件筛选' },
   hits: { title: '命中', sub: '已推送的商品，点任意一条可直接跳转' },
   logs: { title: '日志', sub: '抓取过程的实时输出' },
-  config: { title: '配置', sub: 'config.json 原文；任务类改动即时生效' },
+  config: { title: '配置', sub: '通知渠道即时生效；端口、路径这类启动期配置需重启进程' },
 };
 
 /** 配置页是否已按需载入过，避免每次切换都读一遍文件。 */
