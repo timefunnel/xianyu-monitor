@@ -67,6 +67,8 @@ export class Supervisor {
     this.login = { active: false, qrUrl: '/api/login-qr.svg', qrSvg: null, status: null };
     /** 后台登录流程的完成信号；测试用它等收尾，避免轮询在测试结束后还在跑。 */
     this.loginPromise = null;
+    /** 取消登录用的中止信号。 */
+    this.loginAbort = null;
     /** @type {Monitor|null} */
     this.monitor = null;
     /** 最近一次运行的统计快照。停止后仍要能在界面上看到，因此不随 monitor 一起清空。 */
@@ -486,13 +488,16 @@ export class Supervisor {
    */
   async loginWithQr(timeoutSeconds = 180) {
     if (this.login.active) return { ok: true };
-    if (this.running) await this.stop();
 
+    // **不停止监控**：纯 HTTP 登录只跟 passport 打交道，和旁路的搜索互不干扰；
+    // 而以前这里会先 stop()，用户一旦关掉弹层，就没人再把监控拉起来——任务从此不再跑。
+    // （旧实现停监控是因为浏览器登录要独占 profile 锁，那条理由随着浏览器一起没了。）
+    this.loginAbort = new AbortController();
     this.login.active = true;
     this.login.qrSvg = null;
     this.login.status = null;
     this.#stateChanged();
-    this.logger.info('已开始扫码登录（纯 HTTP，不需要浏览器）', 'web');
+    this.logger.info('已开始扫码登录（纯 HTTP，不需要浏览器；监控不受影响）', 'web');
 
     const file = this.config.search?.cookieFile ?? defaultCookieFile(this.config);
     const store = new FileCookieStore({ file, logger: this.logger });
@@ -505,6 +510,7 @@ export class Supervisor {
           store,
           logger: this.logger,
           timeoutSeconds,
+          signal: this.loginAbort.signal,
           onQr: ({ svg }) => {
             this.login.qrSvg = svg;
             this.#stateChanged();
@@ -532,17 +538,37 @@ export class Supervisor {
           await this.start().catch((error) => this.logger.warn(`登录后自动启动失败：${error.message}`, 'web'));
         }
       } catch (error) {
-        this.lastError = error.message;
-        this.logger.error(`扫码登录失败：${error.message}`, 'web');
+        // 取消不是错误：用户主动关掉了登录弹层。别把它记成 lastError，否则界面会一直挂着一条红字。
+        if (this.loginAbort?.signal.aborted) {
+          this.logger.info('扫码登录已取消', 'web');
+        } else {
+          this.lastError = error.message;
+          this.logger.error(`扫码登录失败：${error.message}`, 'web');
+        }
       } finally {
         this.login.active = false;
         this.login.status = null;
         this.login.qrSvg = null;
+        this.loginAbort = null;
         this.#stateChanged();
       }
     })();
 
     return { ok: true, active: true };
+  }
+
+  /**
+   * 取消进行中的扫码登录。
+   *
+   * 界面关掉登录弹层时调用。以前没有这个口子：关掉弹层只是把窗口藏起来，后台还在轮询到超时，
+   * 而当时登录流程还会先把监控停掉——于是「点了重新登录又关掉」会让任务一直不跑。
+   *
+   * @returns {{ok: boolean, cancelled: boolean}} 是否有流程被取消。
+   */
+  cancelLogin() {
+    if (!this.login.active || !this.loginAbort) return { ok: true, cancelled: false };
+    this.loginAbort.abort();
+    return { ok: true, cancelled: true };
   }
 
   /**

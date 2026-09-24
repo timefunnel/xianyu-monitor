@@ -2543,6 +2543,7 @@ function openLoginModal() {
 }
 
 function closeLoginModal() {
+  const wasActive = Boolean(lastState && lastState.login && lastState.login.active);
   loginModalOpen = false;
   if (qrTimer) {
     clearInterval(qrTimer);
@@ -2550,6 +2551,9 @@ function closeLoginModal() {
   }
   $('loginFlow').textContent = '';
   $('loginMask').hidden = true;
+  // 关掉弹层就是取消登录：告诉服务端中止后台轮询，别让它干等到超时。
+  // （这里不 await：关窗口不该等一次请求；失败了也只是服务端多轮询一会儿。）
+  if (wasActive) api('/api/login-cancel', { method: 'POST' }).catch(() => {});
 }
 
 async function startLogin() {

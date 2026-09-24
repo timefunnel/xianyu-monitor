@@ -289,6 +289,42 @@ test('长链接（真实 lgToken 长度）也扫得出来', () => {
   assert.equal(found.data, payload);
 });
 
+test('中止信号能立刻停下轮询，而不是干等到超时', async () => {
+  // 界面关掉登录弹层走的就是这条路：以前只能等 3 分钟超时。
+  const store = makeStore();
+  const passport = fakePassport({ statuses: ['NEW'] });
+  const controller = new AbortController();
+
+  await assert.rejects(
+    () =>
+      qrLogin({
+        store,
+        logger: silentLogger,
+        fetchImpl: passport.fetchImpl,
+        pollIntervalMs: 5,
+        signal: controller.signal,
+        onWait: () => controller.abort(),
+      }),
+    /登录已取消/,
+  );
+
+  const sent = passport.requests.length;
+  await new Promise((resolve) => setTimeout(resolve, 40));
+  assert.equal(passport.requests.length, sent, '取消之后不该再发任何请求');
+});
+
+test('已经中止的信号：start 阶段就退出，不会白拿二维码', async () => {
+  const store = makeStore();
+  const passport = fakePassport();
+  const controller = new AbortController();
+  controller.abort();
+
+  await assert.rejects(
+    () => qrLogin({ store, logger: silentLogger, fetchImpl: passport.fetchImpl, pollIntervalMs: 1, signal: controller.signal }),
+    /登录已取消/,
+  );
+});
+
 test('QrLoginSession 未 start 就 poll 会明确报错', async () => {
   const session = new QrLoginSession({ logger: silentLogger });
   await assert.rejects(() => session.poll(), /还没调用 start\(\)/);

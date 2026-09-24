@@ -193,6 +193,8 @@ export async function startWebConsole({
       return { body: await supervisor.repushHit(id) };
     },
     'POST /api/login': () => supervisor.loginWithQr(),
+    // 关掉登录弹层时调它：中止后台轮询，而不是让它干等到超时。
+    'POST /api/login-cancel': () => supervisor.cancelLogin(),
   };
 
   /** 渲染登录页。`error` 为空时不显示错误块。 */

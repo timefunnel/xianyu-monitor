@@ -121,14 +121,16 @@ const sleep = (ms) => new Promise((resolve) => setTimeout(resolve, ms));
  */
 export class QrLoginSession {
   /**
-   * @param {{logger?: any, fetchImpl?: typeof fetch, timeoutMs?: number, pollIntervalMs?: number, cna?: string}} [options] 依赖注入（测试用）。
+   * @param {{logger?: any, fetchImpl?: typeof fetch, timeoutMs?: number, pollIntervalMs?: number, cna?: string, signal?: AbortSignal}} [options] 依赖注入（测试用）。
    */
-  constructor({ logger, fetchImpl = fetch, timeoutMs = 20000, pollIntervalMs = POLL_INTERVAL_MS, cna } = {}) {
+  constructor({ logger, fetchImpl = fetch, timeoutMs = 20000, pollIntervalMs = POLL_INTERVAL_MS, cna, signal } = {}) {
     this.logger = logger;
     this.fetch = fetchImpl;
     this.timeoutMs = timeoutMs;
     this.pollIntervalMs = pollIntervalMs;
     this.cna = cna ?? makeCna();
+    /** 外部中止信号：用户关掉登录弹层时用它把轮询停掉，而不是干等超时。 */
+    this.signal = signal;
     /** 本次会话的 cookie 集合。登录期间照单全收，不做 riskCookies 过滤。 */
     this.jar = new Map();
     /** `{codeContent, t, ck}`。 */
@@ -142,6 +144,9 @@ export class QrLoginSession {
    * @returns {Promise<any>} fetch 响应。
    */
   async #call(url, { method = 'GET', body, headers = {}, referer } = {}) {
+    // 中止信号和超时都要生效：只给 timeout 的话，用户取消后当前这次请求还得等它自己超时。
+    const timeout = AbortSignal.timeout(this.timeoutMs);
+    const signal = this.signal ? AbortSignal.any([timeout, this.signal]) : timeout;
     const response = await this.fetch(url, {
       method,
       headers: {
@@ -154,7 +159,7 @@ export class QrLoginSession {
         ...headers,
       },
       ...(body ? { body: String(body) } : {}),
-      signal: AbortSignal.timeout(this.timeoutMs),
+      signal,
     });
     absorbSetCookies(this.jar, setCookiesOf(response));
     return response;
@@ -323,7 +328,7 @@ export class QrLoginSession {
 /**
  * 走完整个扫码登录，并把登录态写进 cookie 文件。
  *
- * @param {{store: FileCookieStore, logger?: any, timeoutSeconds?: number, onQr?: (qr: {codeContent: string, terminal: string, svg: string}) => void, onWait?: (info: {status: string, remainingSeconds: number}) => void, fetchImpl?: typeof fetch, pollIntervalMs?: number, session?: QrLoginSession}} options 依赖与回调。
+ * @param {{store: FileCookieStore, logger?: any, timeoutSeconds?: number, onQr?: (qr: {codeContent: string, terminal: string, svg: string}) => void, onWait?: (info: {status: string, remainingSeconds: number}) => void, fetchImpl?: typeof fetch, pollIntervalMs?: number, session?: QrLoginSession, signal?: AbortSignal}} options 依赖与回调；`signal` 用来中途取消。
  * @returns {Promise<{ok: boolean, cookies: number, missing: string[]}>} 结果；缺失必需 cookie 时 ok 为 false。
  */
 export async function qrLogin({
@@ -335,16 +340,19 @@ export async function qrLogin({
   fetchImpl,
   pollIntervalMs,
   session,
+  signal,
 }) {
-  const qr = session ?? new QrLoginSession({ logger, fetchImpl, pollIntervalMs });
+  const qr = session ?? new QrLoginSession({ logger, fetchImpl, pollIntervalMs, signal });
   const { codeContent } = await qr.start();
   onQr?.({ codeContent, terminal: renderQrTerminal(codeContent), svg: renderQrSvg(codeContent) });
 
-  // 轮询到确认或超时。
+  // 轮询到确认、被取消或超时。
   const deadline = Date.now() + timeoutSeconds * 1000;
   let token = '';
   let confirmed = false;
   while (Date.now() < deadline) {
+    // 用户关掉登录弹层就要立刻停：以前只能干等 3 分钟超时，而且那期间监控还停着。
+    if (signal?.aborted) throw new Error('登录已取消');
     const { status, token: found } = await qr.poll();
     if (status === QR_STATUS.CONFIRMED) {
       token = found;
@@ -357,6 +365,7 @@ export async function qrLogin({
     onWait?.({ status, remainingSeconds: Math.max(0, Math.round((deadline - Date.now()) / 1000)) });
     await sleep(pollIntervalMs ?? POLL_INTERVAL_MS);
   }
+  if (signal?.aborted) throw new Error('登录已取消');
 
   // 超时兜底：服务端可能已经在轮询过程中通过 Set-Cookie 完成了登录。
   if (!confirmed && !qr.jar.has('unb')) throw new Error('等待扫码超时，没有检测到登录');

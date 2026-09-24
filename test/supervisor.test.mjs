@@ -676,3 +676,109 @@ test('check 在搜索器起不来时返回错误而不是抛出', async () => {
   assert.match(result.error, /搜索器起不来/);
   assert.equal(supervisor.snapshot().lastError, '搜索器起不来');
 });
+
+test('开始登录不会停掉监控——纯 HTTP 登录和搜索互不干扰', async () => {
+  // 回归：「点重新登录 → 关掉弹层 → 任务再也不跑」。
+  // 根因是 loginWithQr 一进来就 stop()，而只有登录成功才会重新 start()。
+  const config = makeConfig();
+  config.monitor.notifyOnStart = false;
+  // start() 会 reloadConfig()，所以配置得真的落在磁盘上（别的用 start() 的用例也都这么做）。
+  writeFileSync(path.join(path.dirname(config.storage.stateFile), 'config.json'), JSON.stringify(config), 'utf8');
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => fakeBrowser([]),
+    qrLogin: async ({ signal }) => {
+      // 模拟"等用户扫码"：一直等，直到被取消
+      await new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('登录已取消')));
+      });
+      return { ok: true, cookies: 1, missing: [] };
+    },
+  });
+
+  try {
+    const started = await supervisor.start();
+    assert.equal(started.ok, true, `启动失败：${started.error}`);
+    assert.equal(supervisor.snapshot().running, true);
+
+    await supervisor.loginWithQr();
+    assert.equal(supervisor.snapshot().running, true, '开始登录不该把监控停掉');
+    assert.equal(supervisor.snapshot().login.active, true);
+  } finally {
+    await supervisor.stop();
+  }
+});
+
+test('取消登录：中止轮询、清掉状态、不记错误，监控照常跑', async () => {
+  const config = makeConfig();
+  config.monitor.notifyOnStart = false;
+  writeFileSync(path.join(path.dirname(config.storage.stateFile), 'config.json'), JSON.stringify(config), 'utf8');
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => fakeBrowser([]),
+    qrLogin: async ({ signal }) => {
+      await new Promise((_resolve, reject) => {
+        signal.addEventListener('abort', () => reject(new Error('登录已取消')));
+      });
+      return { ok: true, cookies: 1, missing: [] };
+    },
+  });
+
+  try {
+    await supervisor.start();
+    await supervisor.loginWithQr();
+    assert.equal(supervisor.snapshot().login.active, true);
+
+    const cancelled = supervisor.cancelLogin();
+    assert.equal(cancelled.cancelled, true, '要真的取消掉一个进行中的流程');
+    await supervisor.loginPromise;
+
+    assert.equal(supervisor.snapshot().login.active, false, '取消后 active 要归位');
+    assert.equal(supervisor.snapshot().login.qrSvg, null, '二维码要清掉，别继续挂在状态里');
+    assert.equal(supervisor.snapshot().running, true, '取消后监控必须还在跑');
+    assert.equal(supervisor.snapshot().lastError, null, '取消是用户主动行为，不该记成错误');
+    assert.equal(supervisor.cancelLogin().cancelled, false, '没有流程在跑时取消是空操作');
+  } finally {
+    await supervisor.stop();
+  }
+});
+
+test('取消后重新发起登录是可以的（不会卡在 active）', async () => {
+  const config = makeConfig();
+  config.monitor.notifyOnStart = false;
+  let calls = 0;
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => fakeBrowser([]),
+    qrLogin: async ({ signal }) => {
+      calls += 1;
+      if (calls === 1) {
+        await new Promise((_resolve, reject) => {
+          signal.addEventListener('abort', () => reject(new Error('登录已取消')));
+        });
+      }
+      return { ok: true, cookies: 1, missing: [] };
+    },
+  });
+
+  try {
+    config.search = { ...config.search };
+    await supervisor.loginWithQr();
+    supervisor.cancelLogin();
+    await supervisor.loginPromise;
+
+    const second = await supervisor.loginWithQr();
+    assert.equal(second.ok, true, '取消之后必须还能再发一次');
+    await supervisor.loginPromise;
+    assert.equal(supervisor.snapshot().login.active, false);
+    assert.equal(calls, 2);
+  } finally {
+    await supervisor.stop();
+  }
+});
