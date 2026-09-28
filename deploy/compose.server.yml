@@ -36,6 +36,10 @@ services:
       # 挂目录后原子替换只需**目录**可写，这两种情况都不会再出现（root 重建的文件也能被替换掉）。
       # 首次部署：mkdir -p conf data && cp config.example.json conf/config.json \
       #           && sudo chown -R 1000:1000 conf data
+      #
+      # ⚠️ 配套要求：`storage.stateFile` 请写成**容器内绝对路径** `/app/data/state.json`。
+      # 相对路径是按**配置文件所在目录**解析的，配置挪进 conf/ 之后 "./data/state.json"
+      # 会变成 /app/conf/data/ —— 数据跑到另一个目录，控制台的命中历史会看起来是空的。
       - ./conf:/app/conf
       - ./data:/app/data
     # 只绑本机：公网入口交给宿主机上的 OpenResty（1Panel），容器不直接暴露。

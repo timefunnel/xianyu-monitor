@@ -45,6 +45,22 @@ git tag v0.1.1 && git push origin v0.1.1
 不需要在仓库里配任何密钥。构建完成后服务器上 `docker compose pull && docker compose up -d` 即升级；
 想回滚就把 compose 里的 `:latest` 换成具体版本号（如 `:0.1.0`）。
 
+> ⚠️ **`storage.stateFile` 要写绝对路径**：相对路径是按**配置文件所在目录**解析的。
+> 用 `./conf:/app/conf` 这种挂法时，`"./data/state.json"` 会被解析成 `/app/conf/data/state.json`——
+> 数据跑到另一个目录，`./data` 那个卷空着，**控制台的命中历史会看起来是空的**（实测踩过）。
+> 写 `/app/data/state.json` 就与配置文件位置无关了。
+
+### 诊断脚本在容器里跑
+
+`diagnose-risk.mjs` 会 `import ./src/mtop.mjs`，而镜像里这两样都带着，所以不需要在宿主机留源码：
+
+```bash
+docker compose exec xianyu-monitor node diagnose-risk.mjs
+```
+
+同理，宿主机上只需要 `docker-compose.yml`、`.env`、`conf/`、`data/` 这几样；
+`src/`、`package.json`、`Dockerfile` 都不必留在服务器上（镜像里都有）。
+
 ## 2. 写配置与密钥
 
 `config.json` 的 `web` 段是这个部署的关键：
