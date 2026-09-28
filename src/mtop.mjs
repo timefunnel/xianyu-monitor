@@ -360,18 +360,29 @@ error.loginAt = this.cookies.loginAt ?? null;
         this.logger?.info?.('mtop token 已过期，用新下发的 token 重新签名', task.name);
         continue;
       }
-      // 重签之后还是 token 错误，说明响应里压根没下发新 token：服务端不认这个会话了。
-      // 这时别报成含糊的「搜索接口返回错误」，直接告诉人去重新登录。
+      // 重签之后还是 token 错误、而且响应里没下发新 token。
+      //
+      // **不能因此断定会话已死**：实测这种情况会自愈——出事后约 25 分钟，同一份 cookie 去问
+      // loginuser.get 仍然回 valid，而使用者并没有重新登录。所以这里多花一次最轻的请求问清楚：
+      // 真失效才请人重新扫码，只是抖动就照常退避重试（RGV587 那条分支用的也是这个办法）。
       if (TOKEN_ERROR_PATTERN.test(verdict.message ?? '')) {
+        const session = await this.checkSession();
+        if (session === 'invalid') {
+          const error = new Error(
+            `mtop 的登录票据失效且无法自动续期（${verdict.message}），loginuser.get 也确认会话已失效。` +
+              '请重新扫码登录（控制台顶部「重新登录」，或 node src/cli.mjs login）；登录成功后会自动接上。',
+          );
+          error.code = 'auth';
+          // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+          error.needsRelogin = true;
+          error.loginAt = this.cookies.loginAt ?? null;
+          throw error;
+        }
         const error = new Error(
-          `mtop 的登录票据失效且无法自动续期（${verdict.message}）。响应里没有下发新 token，` +
-            '说明服务端已经不认这个会话——请重新扫码登录（node src/cli.mjs login）。',
+          `mtop 令牌握手失败（${verdict.message}），但会话本身仍然有效（loginuser.get 返回 ${session}）——` +
+            '这属于抖动，会按退避重试，不需要重新登录。',
         );
         error.code = 'auth';
-        // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
-        // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
-error.needsRelogin = true;
-error.loginAt = this.cookies.loginAt ?? null;
         throw error;
       }
 

@@ -440,15 +440,45 @@ test('服务端把 EXPIRED 拼成 EXOIRED 时也必须认出来并重签', async
   );
 });
 
-test('重签之后仍是 token 错误时，明确让人重新登录，而不是含糊的「接口返回错误」', async () => {
+test('重签后仍报 token 错误：先问 loginuser.get，会话还有效就别让人去重新登录', async () => {
+  // 回归：实测这种情况会自愈——出事后约 25 分钟，同一份 cookie 问 loginuser.get 仍回 valid，
+  // 而使用者并没有重新登录。早先我们把它当成「会话已死」直接停下任务，属于误判。
   const tokenError = () => response({ ret: ['FAIL_SYS_TOKEN_EXOIRED::令牌过期'], data: {} });
-  const { searcher, calls } = makeSearcher([tokenError(), tokenError()]);
+  const { searcher, calls } = makeSearcher([
+    tokenError(),
+    tokenError(),
+    response({ ret: ['SUCCESS::调用成功'], data: {} }), // loginuser.get：会话其实还有效
+  ]);
 
   await assert.rejects(
     () => searcher.search({ name: 't', keyword: 'x' }),
-    (error) => error.code === 'auth' && /重新扫码登录/.test(error.message),
+    (error) =>
+      error.code === 'auth' &&
+      error.needsRelogin !== true &&
+      /会话本身仍然有效/.test(error.message) &&
+      /不需要重新登录/.test(error.message),
+    '抖动不能被当成会话失效',
   );
-  assert.equal(calls.length, 2, '最多试两次，不能在这里反复撞');
+  assert.equal(calls.length, 3, '两次搜索 + 一次 loginuser.get');
+});
+
+test('loginuser.get 也确认失效时，才让人重新扫码登录（并带上存活时长）', async () => {
+  const tokenError = () => response({ ret: ['FAIL_SYS_TOKEN_EXOIRED::令牌过期'], data: {} });
+  const { searcher, calls } = makeSearcher([
+    tokenError(),
+    tokenError(),
+    response({ ret: ['FAIL_SYS_SESSION_EXPIRED::Session过期'], data: {} }),
+  ]);
+
+  await assert.rejects(
+    () => searcher.search({ name: 't', keyword: 'x' }),
+    (error) =>
+      error.code === 'auth' &&
+      error.needsRelogin === true &&
+      /重新扫码登录/.test(error.message),
+    '确认失效才该停下任务',
+  );
+  assert.equal(calls.length, 3, '两次搜索 + 一次 loginuser.get');
 });
 
 test('checkSession 在 token 冷启动时报空时，换新 token 重问一次', async () => {
