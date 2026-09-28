@@ -1,0 +1,49 @@
+name: 构建并推送镜像
+
+# 只在打 tag 时构建：镜像对应明确的版本，可回滚；平时改代码不会产生一堆半成品镜像。
+on:
+  push:
+    tags:
+      - 'v*'
+
+jobs:
+  build:
+    runs-on: ubuntu-latest
+    permissions:
+      contents: read
+      # 推 GHCR 只要内置的 GITHUB_TOKEN，不需要在仓库里配任何密钥。
+      packages: write
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: docker/setup-buildx-action@v3
+
+      - uses: docker/login-action@v3
+        with:
+          registry: ghcr.io
+          username: ${{ github.actor }}
+          password: ${{ secrets.GITHUB_TOKEN }}
+
+      - uses: docker/metadata-action@v5
+        id: meta
+        with:
+          # 小写是硬要求：GHCR 不接受大写镜像名。timefunnel/xianyu-monitor 本来就是小写。
+          images: ghcr.io/${{ github.repository }}
+          tags: |
+            type=semver,pattern={{version}}
+            type=semver,pattern={{major}}.{{minor}}
+            type=raw,value=latest
+          labels: |
+            org.opencontainers.image.title=xianyu-monitor
+            org.opencontainers.image.description=闲鱼关键词监控：直连 mtop 搜索，命中规则后推送到 IM
+            org.opencontainers.image.licenses=MIT
+
+      - uses: docker/build-push-action@v6
+        with:
+          context: .
+          push: true
+          tags: ${{ steps.meta.outputs.tags }}
+          labels: ${{ steps.meta.outputs.labels }}
+          # 复用上次的层缓存，重建快很多。
+          cache-from: type=gha
+          cache-to: type=gha,mode=max

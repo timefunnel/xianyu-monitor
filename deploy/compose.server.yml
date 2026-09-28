@@ -6,7 +6,7 @@
 # 用法（把下面的 <...> 换成实际值）：
 #   cp deploy/compose.server.yml /opt/xianyu-monitor/docker-compose.yml
 #   # 然后按 deploy/README-部署.md 准备 config.json 与 .env
-#   docker compose up -d --build
+#   docker compose up -d
 #
 # 注意 config.json 里必须设：
 #   "web": { "host": "0.0.0.0", "password": "${WEB_PASSWORD}", "trustProxy": true, "open": false }
@@ -14,7 +14,11 @@
 #   - trustProxy true 才能按真实访客 IP 限流、并认 X-Forwarded-Proto 给 Cookie 加 Secure
 services:
   xianyu-monitor:
-    build: .
+    # 二选一：
+    #   1) 拉已发布的镜像（推荐）：打 tag 后 CI 推到 GHCR，服务器上 pull 就行，不必留源码
+    #   2) 本地构建：注释掉 image:，改用 build: .
+    image: ghcr.io/timefunnel/xianyu-monitor:latest
+    # build: .
     container_name: xianyu-monitor
     restart: unless-stopped
     # 跑控制台（它会自动拉起监控）。只要监控、不要界面就换成 run。

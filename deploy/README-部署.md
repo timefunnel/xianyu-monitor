@@ -12,18 +12,38 @@
 | DNS | 把域名（如 `yu.example.com`）的 A 记录指向服务器公网 IP——**证书签发依赖它** |
 | 访问密码 | 必须设。这个控制台能改配置、看历史、触发推送 |
 
-## 1. 上传代码
+## 1. 准备部署目录
 
-只需要源码与依赖清单，**不要**把本机的 `data/` 和 `config.json` 打包进去：
+**推荐：不传源码，直接拉已发布的镜像。** 打好 tag 后 CI 会自动构建并推到
+`ghcr.io/timefunnel/xianyu-monitor`，服务器上只要 `config.json`、`.env` 和 `docker-compose.yml`：
+
+```bash
+mkdir -p /opt/xianyu-monitor/data && cd /opt/xianyu-monitor
+# 放好 config.json（见第 2 节）、.env、docker-compose.yml（来自 deploy/compose.server.yml）
+docker compose up -d          # 自动 pull 镜像
+```
+
+想本地构建（改了源码、或镜像拉不动）就把 compose 里的 `image:` 换成 `build: .`，并把源码传上去
+（**不要**把本机的 `data/` 与 `config.json` 打包进去）：
 
 ```bash
 # 本机
 tar czf deploy-pkg.tar.gz src package.json Dockerfile config.example.json diagnose-risk.mjs LICENSE
 scp deploy-pkg.tar.gz 用户@服务器:/tmp/
 # 服务器
-mkdir -p /opt/xianyu-monitor/data
-tar xzf /tmp/deploy-pkg.tar.gz -C /opt/xianyu-monitor && rm /tmp/deploy-pkg.tar.gz
+cd /opt/xianyu-monitor && tar xzf /tmp/deploy-pkg.tar.gz && rm /tmp/deploy-pkg.tar.gz
+docker compose up -d --build
 ```
+
+### 打 tag 发版（CI 会构建镜像）
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+工作流在 `.github/workflows/docker.yml`：只认 `v*` tag，用内置 `GITHUB_TOKEN` 推 GHCR，
+不需要在仓库里配任何密钥。构建完成后服务器上 `docker compose pull && docker compose up -d` 即升级；
+想回滚就把 compose 里的 `:latest` 换成具体版本号（如 `:0.1.0`）。
 
 ## 2. 写配置与密钥
 

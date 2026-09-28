@@ -1,6 +1,29 @@
+# 构建上下文里不该出现的东西。
+#
+# 最要紧的是 data/ 与 config.json、.env：它们是登录态与密钥。Dockerfile 只 COPY 明确列出的路径，
+# 本来就不会把它们打进镜像；排除掉是为了**不把它们交给构建守护进程**，也免得哪天改 Dockerfile 时手滑。
 node_modules/
 data/
 config.json
 .env
+.env.local
+cookies.json
 *.log
+*.tmp
+*.bak-*
 .git/
+.github/
+
+# 只在开发/验收时用的东西，镜像里用不到
+docs/
+_research/
+_issues/
+_readmes/
+_src/
+test/
+deploy/
+check-*.mjs
+clean-test-residue.mjs
+debug-single-cycle.mjs
+start.sh
+start.cmd
