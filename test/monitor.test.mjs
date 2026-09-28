@@ -70,7 +70,7 @@ async function runRounds(
       maxPerCycle,
       ...(notifyEnabled === undefined ? {} : { enabled: notifyEnabled }),
     },
-    monitor: { notifyOnStart: false, heartbeatHours: 24, minRequestGapSeconds: 0 },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0 },
     tasks: [
       {
         name: 't',
@@ -145,7 +145,7 @@ test('静默期间的失败告警照常发送（别把故障一起瞒掉）', as
   };
   const config = withDefaults({
     notify: { channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }], enabled: false },
-    monitor: { notifyOnStart: false, heartbeatHours: 24, minRequestGapSeconds: 0 },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0 },
     tasks: [{ name: 't', keyword: 'x', intervalSeconds: 1, jitterSeconds: 0, filters: {} }],
   });
   const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-m-')), 'state.json') }).load();
@@ -241,7 +241,7 @@ async function runFailing({ code, message, rounds, maxBackoffSeconds = 2, riskCo
 
   const config = withDefaults({
     notify: { channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }] },
-    monitor: { notifyOnStart: false, heartbeatHours: 24, minRequestGapSeconds: 0, failureAlertThreshold: 3, maxBackoffSeconds, riskControlCooldownSeconds },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0, failureAlertThreshold: 3, maxBackoffSeconds, riskControlCooldownSeconds },
     tasks: [{ name: 't', keyword: 'x', intervalSeconds: 1, jitterSeconds: 0, filters: {} }],
   });
   const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-f-')), 'state.json') }).load();
@@ -287,7 +287,7 @@ function idleBrowser() {
 function twoTaskMonitor(intervalSeconds = 1) {
   const config = withDefaults({
     notify: { channels: [{ type: 'webhook', url: 'https://example.invalid/hook' }] },
-    monitor: { notifyOnStart: false, heartbeatHours: 24, minRequestGapSeconds: 0 },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0 },
     tasks: [
       { name: 'a', keyword: 'a', intervalSeconds, jitterSeconds: 0, filters: {} },
       { name: 'b', keyword: 'b', intervalSeconds, jitterSeconds: 0, filters: {} },
@@ -302,7 +302,7 @@ function twoTaskMonitor(intervalSeconds = 1) {
 test('一个任务都没启用时待命而不是退出（界面打开开关就能直接跑）', async () => {
   const config = withDefaults({
     notify: { channels: [{ type: 'webhook', url: 'https://example.invalid/hook' }] },
-    monitor: { notifyOnStart: false, heartbeatHours: 24, minRequestGapSeconds: 0 },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0 },
     tasks: [{ name: 't', keyword: 'x', intervalSeconds: 1, jitterSeconds: 0, enabled: false, filters: {} }],
   });
   const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-m-')), 'state.json') }).load();
@@ -329,7 +329,7 @@ test('全局请求间隔闸：跨任务的搜索会被拉开到最小间隔', as
   // 几个 60 秒的任务就能凑到实测触发风控的「每分钟 3 次」量级。
   const config = withDefaults({
     notify: { channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }] },
-    monitor: { notifyOnStart: false, heartbeatHours: 24, minRequestGapSeconds: 0.6 },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0.6 },
     tasks: [
       { name: 'a', keyword: 'a', intervalSeconds: 1, jitterSeconds: 0, filters: {} },
       { name: 'b', keyword: 'b', intervalSeconds: 1, jitterSeconds: 0, filters: {} },
@@ -356,6 +356,101 @@ test('全局请求间隔闸：跨任务的搜索会被拉开到最小间隔', as
     // 留一点调度误差：配置 600ms，实测不应低于 500ms
     assert.ok(gap >= 500, `第 ${index} 次与上一次只隔了 ${gap}ms，间隔闸没生效`);
   }
+});
+
+test('抓取失败与恢复都会回调出去：控制台才转得动「登录失效 → 已恢复」', async () => {
+  // 界面上的「登录正常」曾经只由启动时那一次探测决定，会话过期后它一直不改口，
+  // 于是只有日志面板在刷 RGV587。这个回调是界面能改口的唯一信息来源。
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '' });
+
+  const config = withDefaults({
+    notify: { channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }] },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0, maxBackoffSeconds: 1 },
+    tasks: [{ name: 't', keyword: 'x', intervalSeconds: 1, jitterSeconds: 0, filters: {} }],
+  });
+  const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-hook-')), 'state.json') }).load();
+
+  const failures = [];
+  const recoveries = [];
+  const ref = { value: null };
+  let calls = 0;
+  const searcher = {
+    async search() {
+      calls += 1;
+      if (calls === 1) {
+        const error = new Error('搜索被拦（RGV587），并且已确认登录态失效');
+        error.code = 'auth';
+        throw error;
+      }
+      ref.value.stop();
+      return { items: [], source: 'api', raw: [], requests: 1 };
+    },
+  };
+  const monitor = new Monitor({
+    config,
+    store,
+    searcher,
+    logger: createLogger({ level: 'error' }),
+    onFailure: (info) => failures.push(info),
+    onRecover: (info) => recoveries.push(info),
+  });
+  ref.value = monitor;
+
+  try {
+    await monitor.run();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(failures.length, 1, '失败要回调一次');
+  assert.equal(failures[0].task.name, 't');
+  assert.equal(failures[0].error.code, 'auth');
+  assert.equal(failures[0].failures, 1, '回调要带上连续失败次数，界面才好判断要不要弹条');
+  assert.equal(recoveries.length, 1, '抓成功一次就要回调，界面才能把红字收回');
+  assert.equal(recoveries[0].task.name, 't');
+});
+
+test('回调抛错不能把任务循环带下去（那会被误记成一次抓取失败）', async () => {
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '' });
+
+  const config = withDefaults({
+    notify: { channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }] },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0, maxBackoffSeconds: 1 },
+    tasks: [{ name: 't', keyword: 'x', intervalSeconds: 1, jitterSeconds: 0, filters: {} }],
+  });
+  const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-hook-bad-')), 'state.json') }).load();
+
+  const ref = { value: null };
+  let calls = 0;
+  const searcher = {
+    async search() {
+      calls += 1;
+      const error = new Error('抓取失败');
+      error.code = 'api';
+      if (calls >= 2) ref.value.stop();
+      throw error;
+    },
+  };
+  const monitor = new Monitor({
+    config,
+    store,
+    searcher,
+    logger: createLogger({ level: 'error' }),
+    onFailure: () => {
+      throw new Error('界面回调坏了');
+    },
+  });
+  ref.value = monitor;
+
+  try {
+    await monitor.run();
+  } finally {
+    globalThis.fetch = originalFetch;
+  }
+
+  assert.equal(calls, 2, '回调抛错只该被记一条日志，第二轮照常跑');
 });
 
 test('同时跑两个任务时，stop() 要把两个都唤醒', async () => {

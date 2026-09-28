@@ -177,7 +177,13 @@ export async function startWebConsole({
     },
     // 服务生命周期不在这里控制：监控随进程启动、随进程退出。
     // 页面能打开就说明服务在跑，所以没有 start / stop / restart 这类接口。
-    'POST /api/check': () => supervisor.check(),
+    'POST /api/check': async (request) => {
+      const { task } = await readJsonBody(request);
+      if (task !== undefined && (typeof task !== 'string' || task === '')) {
+        return { status: 400, body: { ok: false, error: 'task 必须是非空字符串（任务名）' } };
+      }
+      return { body: await supervisor.check(task ? { task } : undefined) };
+    },
     // 传 channel 就只测那一条（可以是界面上还没保存的配置），不传则测配置里所有渠道。
     'POST /api/test-notify': async (request) => {
       const { channel } = await readJsonBody(request);

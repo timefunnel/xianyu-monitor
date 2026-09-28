@@ -595,6 +595,47 @@ test('check 标出已经推送过的商品', async () => {
   assert.equal(entry.hits[0].alreadyPushed, true);
 });
 
+test('check 可以只测指定的那个任务——而且停用的任务也测得了', async () => {
+  // 「测试」按钮在每张任务卡上，点的就是那一个任务；而调筛选条件通常发生在任务还停着的时候，
+  // 所以这里刻意不看 enabled——否则用户会先被迫开开关（真的开始抓取）才能试。
+  const config = makeConfig({
+    tasks: [
+      { name: 'a', keyword: '显示器', intervalSeconds: 180, enabled: false, filters: {} },
+      { name: 'b', keyword: '键盘', intervalSeconds: 180, filters: {} },
+    ],
+  });
+  const keywordOf = (task) => `kw-${task.keyword}`;
+  const asked = [];
+  const browser = {
+    async search(task) {
+      asked.push(task.name);
+      return { items: [sampleItem({ id: String(asked.length), title: keywordOf(task) })], source: 'api', raw: [] };
+    },
+  };
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => browser,
+  });
+
+  const one = await supervisor.check({ task: 'a' });
+  assert.equal(one.ok, true);
+  assert.deepEqual(asked, ['a'], '只该搜被点的那一个任务');
+  assert.equal(one.results.length, 1);
+  assert.equal(one.results[0].task, 'a');
+  assert.equal(one.results[0].hits[0].title, 'kw-显示器', '停用的任务照样能测');
+
+  asked.length = 0;
+  const all = await supervisor.check();
+  assert.deepEqual(asked, ['b'], '不指定任务时仍然只测启用中的任务');
+  assert.equal(all.results.length, 1);
+
+  const missing = await supervisor.check({ task: '不存在' });
+  assert.equal(missing.ok, false);
+  assert.match(missing.error, /没有这个任务/);
+});
+
 test('「重新登录」起一个纯 HTTP 的二维码会话，成功后把登录态落盘', async () => {
   // 这条盯的是：登录不再需要浏览器，而且**注入点存在**——默认的 qrLogin 会真的请求
   // passport.goofish.com，单测必须能把它换掉，否则跑测试就等于在打闲鱼的登录接口。
@@ -780,5 +821,70 @@ test('取消后重新发起登录是可以的（不会卡在 active）', async (
     assert.equal(calls, 2);
   } finally {
     await supervisor.stop();
+  }
+});
+
+/** 轮询等一个条件成立（异步流程的断言不能靠固定 sleep）。 */
+async function waitUntil(predicate, timeoutMs = 6000) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, 25));
+  }
+  throw new Error('等待条件超时');
+}
+
+test('抓取因登录失效失败时，状态接口立刻改口：session 变 invalid、最近错误指向重新登录', async () => {
+  // 服务器上踩到的现场：容器启动时会话还是好的，三天后 cookie 过期了，界面却一直显示
+  // 「登录正常」，只有日志面板在刷 RGV587，人根本不知道该去重新扫码。
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async () => ({ ok: true, status: 200, text: async () => '' });
+
+  const config = makeConfig();
+  config.monitor.notifyOnStart = false;
+  config.monitor.minRequestGapSeconds = 0;
+  config.monitor.maxBackoffSeconds = 1;
+  config.tasks[0].intervalSeconds = 1;
+  config.tasks[0].jitterSeconds = 0;
+  const dir = path.dirname(config.storage.stateFile);
+  writeFileSync(path.join(dir, 'config.json'), JSON.stringify(config), 'utf8');
+
+  let failing = true;
+  const searcher = {
+    async search() {
+      if (failing) {
+        const error = new Error('搜索被拦（RGV587_ERROR::SM::哎哟喂,被挤爆啦），并且已确认登录态失效：请重新扫码登录');
+        error.code = 'auth';
+        throw error;
+      }
+      return { items: [], source: 'api', raw: [], requests: 1 };
+    },
+    async checkSession() {
+      return 'valid';
+    },
+  };
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(dir, 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => searcher,
+  });
+
+  try {
+    await supervisor.start();
+    await waitUntil(() => supervisor.snapshot().session === 'invalid');
+    assert.match(
+      supervisor.snapshot().lastError,
+      /登录态失效|重新扫码登录/,
+      '最近错误要说清是登录态的问题，而不是「被挤爆」',
+    );
+
+    // 重新扫码之后登录态恢复：一次成功的搜索就该把界面上的红字收掉。
+    failing = false;
+    await waitUntil(() => supervisor.snapshot().lastError === null);
+    assert.equal(supervisor.snapshot().session, 'valid');
+  } finally {
+    await supervisor.stop();
+    globalThis.fetch = originalFetch;
   }
 });

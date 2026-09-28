@@ -6,11 +6,12 @@
 // 任何改动让它变成 2 次都必须是显式的、有理由的例外。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
-import { readFileSync } from 'node:fs';
+import { readFileSync, writeFileSync, mkdtempSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { MTOP, MtopSearcher, buildSearchBody, createSearcher, mtopSign, tokenOf } from '../src/mtop.mjs';
+import { FileCookieStore } from '../src/cookies.mjs';
 import { bodyMatchesFilters } from '../src/search.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
@@ -294,6 +295,97 @@ test('会话失效与其它错误按已有分类抛出，交给主循环退避',
     () => down.searcher.search({ name: 't', keyword: 'x' }),
     (error) => error.code === 'api' && /发不出去/.test(error.message),
   );
+});
+
+// ---------- RGV587：限流还是登录失效，必须分清 ----------
+
+test('RGV587 之后先问一句登录态：cookie 已失效时报「重新登录」，而不是让人去调大间隔', async () => {
+  // 实测踩到的坑：登录 cookie 过期后，搜索接口回的仍然是 RGV587「被挤爆啦」，
+  // 光看它永远分不清是限流还是登录没了——而这两者的处置完全相反（等一下 vs 去重新扫码）。
+  const { searcher, calls } = makeSearcher([
+    response({ ret: ['RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试!'], data: {} }),
+    response({ ret: ['FAIL_SYS_SESSION_EXPIRED::Session过期'], data: {} }),
+  ]);
+
+  await assert.rejects(
+    () => searcher.search({ name: 't', keyword: 'x' }),
+    (error) =>
+      error.code === 'auth' &&
+      /重新扫码登录/.test(error.message) &&
+      !/调大 intervalSeconds/.test(error.message),
+  );
+  assert.equal(calls.length, 2, '被 RGV587 拦住时多花一次 loginuser.get 来定性');
+  assert.ok(calls[1].url.includes('loginuser.get'), calls[1].url);
+});
+
+test('RGV587 但登录态确实有效时仍按限流处置（等一会儿就好，别把人引去重新登录）', async () => {
+  const { searcher, calls } = makeSearcher([
+    response({ ret: ['RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试!'], data: {} }),
+    response({ ret: ['SUCCESS::调用成功'], data: {} }),
+  ]);
+
+  await assert.rejects(
+    () => searcher.search({ name: 't', keyword: 'x' }),
+    (error) => error.code === 'throttled' && /调大 intervalSeconds/.test(error.message),
+  );
+  assert.equal(calls.length, 2, '探测本身也只有 1 次请求');
+  assert.equal((await searcher.checkSession()) === 'valid', true);
+});
+
+test('探测不出结论（网络抖动）时按原来的限流处置，不硬说成登录失效', async () => {
+  const { searcher } = makeSearcher([
+    response({ ret: ['RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试!'], data: {} }),
+    () => {
+      throw new Error('offline');
+    },
+  ]);
+
+  await assert.rejects(
+    () => searcher.search({ name: 't', keyword: 'x' }),
+    (error) => error.code === 'throttled',
+  );
+});
+
+test('重新扫码登录写了新 cookie 文件后，内存里续期过的 cookie 立刻作废（否则新登录态被盖住）', async () => {
+  // 「重新登录」是另一个入口写同一个文件；搜索器内存里还留着上一段会话的 `_m_h5_tk`。
+  // 不认外部改写的话，请求会带着老 token + 新 unb 出去，看着像「重新登录没用」。
+  const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-relogin-'));
+  const file = path.join(dir, 'cookies.json');
+  const jar = (token, unb) =>
+    JSON.stringify({
+      version: 1,
+      cookies: [
+        { name: 'unb', value: unb, domain: '.goofish.com', path: '/' },
+        { name: '_m_h5_tk', value: token, domain: '.goofish.com', path: '/' },
+      ],
+      refused: [],
+    });
+  writeFileSync(file, jar('old_1', 'u1'), 'utf8');
+
+  const store = new FileCookieStore({ file });
+  const { impl, calls } = fakeFetch([
+    response(fixture, ['_m_h5_tk=refreshed_2; Path=/']),
+    success(),
+  ]);
+  // 两次 search 之间不设全局最小间隔：这条测的是「文件改写要立刻生效」，不是节流闸。
+  const searcher = new MtopSearcher({
+    config: makeConfig({ cookieFile: file }, { minRequestGapSeconds: 0 }),
+    logger: {},
+    cookies: store,
+    fetchImpl: impl,
+  });
+
+  await searcher.search({ name: 't', keyword: 'x' });
+  assert.match(calls[0].init.headers.cookie, /_m_h5_tk=old_1/, '第一次用的是文件里的 token');
+
+  // 用户点了「重新登录」，另一处把新登录态写进同一个文件。
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  writeFileSync(file, jar('login_3', 'u2'), 'utf8');
+
+  await searcher.search({ name: 't', keyword: 'x' });
+  assert.match(calls[1].init.headers.cookie, /_m_h5_tk=login_3/, '新登录态必须立刻生效，不能被内存里的续期值盖住');
+  assert.match(calls[1].init.headers.cookie, /unb=u2/);
+  assert.doesNotMatch(calls[1].init.headers.cookie, /refreshed_2/);
 });
 
 // ---------- 登录态探测：不再加载页面 ----------

@@ -80,4 +80,28 @@ test('refuse 记的是具体值，换发新值不受牵连，且跨重启仍然�
   assert.equal(reloaded.isRefused('sgcookie', 'bad-2'), false, '服务端换发的新值不该被牵连');
 });
 
+test('externallyChanged 只认「别人改过」：自己落的盘不算，外部改写才算', async () => {
+  // 搜索器用它判断「是不是有人重新扫码登录了」，好把内存里那些续期 cookie 丢掉。
+  // 认错方向的两个后果都很糟：把自己写的当成外部的 → 每轮白丢一次续期；
+  // 把外部的当成自己的 → 新登录态被老 cookie 盖住，看着像重新登录没用。
+  const file = tempFile();
+  const store = new FileCookieStore({ file });
+  const cookie = (value) => ({ name: 'unb', value, domain: '.goofish.com', path: '/' });
+
+  assert.equal(store.externallyChanged(), false, '还没读过也没写过，不算被外部改过');
+
+  await store.save(new Map([['unb', cookie('1')]]));
+  await store.load();
+  assert.equal(store.externallyChanged(), false, '自己刚写的那一版不算外部改写');
+
+  await new Promise((resolve) => setTimeout(resolve, 10));
+  writeFileSync(file, JSON.stringify({ version: 1, cookies: [cookie('2')], refused: [] }), 'utf8');
+  await store.load();
+  assert.equal(store.externallyChanged(), true, '别人（重新登录）写进来的必须认出来');
+
+  await store.save(new Map([['unb', cookie('3')]]));
+  await store.load();
+  assert.equal(store.externallyChanged(), false, '自己再写一次后又回到「自己写的那一版」');
+});
+
 

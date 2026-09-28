@@ -79,8 +79,8 @@ test('onUnknownField 只接受 pass / reject', () => {
 });
 
 test('withDefaults 补齐缺省值且不覆盖显式配置', () => {
-  const resolved = withDefaults({ ...validConfig(), monitor: { heartbeatHours: 1 } });
-  assert.equal(resolved.monitor.heartbeatHours, 1);
+  const resolved = withDefaults({ ...validConfig(), monitor: { maxBackoffSeconds: 60 } });
+  assert.equal(resolved.monitor.maxBackoffSeconds, 60);
   assert.equal(resolved.monitor.onUnknownField, 'pass');
   assert.equal(resolved.monitor.failureAlertThreshold, 3);
   assert.equal(resolved.notify.maxPerCycle, 8);

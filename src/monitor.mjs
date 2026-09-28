@@ -46,15 +46,19 @@ export class Monitor {
    *   请求队列。Web 控制台在监控运行期间也要用同一个搜索器做「立即检查」，
    *   共用同一个队列才能保证请求不会互相插入（全局最小请求间隔也挂在这条链上）。
    * @param {(item: any, task: any) => void} [options.onNotified] 每次推送成功后的回调。
+   * @param {(info: {task: any, error: any, failures: number}) => void} [options.onFailure]
+   *   每轮抓取失败后的回调。控制台靠它把「登录态失效」这类结论摆到界面上。
+   * @param {(info: {task: any}) => void} [options.onRecover] 连续失败之后又抓成功时的回调。
    */
-  constructor({ config, store, searcher, logger, serialize, onNotified }) {
+  constructor({ config, store, searcher, logger, serialize, onNotified, onFailure, onRecover }) {
     this.config = config;
     this.store = store;
     this.searcher = searcher;
     this.logger = logger;
     this.onNotified = onNotified;
+    this.onFailure = onFailure;
+    this.onRecover = onRecover;
     this.running = false;
-    this.startedAt = Date.now();
     this.queue = Promise.resolve();
     /** 多任务时推送标题带上任务名，单任务时省掉这个噪声；由 run() 按启用任务数设置。 */
     this.showTaskName = false;
@@ -77,7 +81,6 @@ export class Monitor {
     this.controls = new Map();
     /** run() 常驻用的闸门；stop() 释放它。 */
     this.releaseRun = null;
-    this.heartbeat = null;
   }
 
   /**
@@ -201,17 +204,11 @@ export class Monitor {
       this.#warnAboutCombinedRate(tasks);
     }
 
-    this.heartbeat = setInterval(() => {
-      this.#heartbeat().catch((error) => this.logger.error(`心跳发送异常：${error.message}`, 'monitor'));
-    }, this.config.monitor.heartbeatHours * 3600000);
-
     // 常驻：任务可以在运行期间被单独启停，因此不能只等最初那批循环结束。
     await new Promise((resolve) => {
       this.releaseRun = resolve;
     });
     this.releaseRun = null;
-    clearInterval(this.heartbeat);
-    this.heartbeat = null;
 
     // 收尾：唤醒仍在等待的任务并等它们真正退出。
     const loops = [...this.controls.values()].map((control) => control.loop);
@@ -226,6 +223,25 @@ export class Monitor {
     this.running = false;
     for (const control of this.controls.values()) this.#wakeControl(control);
     this.releaseRun?.();
+  }
+
+  /**
+   * 调一个外部回调，**绝不**让它把主循环带下去。
+   *
+   * 回调是给控制台看状态用的旁路；它抛错顶多让界面少刷新一次，不该让某个任务的循环
+   * 「异常退出」——那会被记成一次抓取失败，看起来像闲鱼的问题。
+   *
+   * @param {((info: any) => void)|undefined} callback 回调。
+   * @param {any} info 回调参数。
+   * @param {string} what 用于日志的描述。
+   */
+  #emit(callback, info, what) {
+    if (typeof callback !== 'function') return;
+    try {
+      callback(info);
+    } catch (error) {
+      this.logger.warn?.(`${what}回调抛错（不影响监控）：${error.message}`, info?.task?.name);
+    }
   }
 
   /**
@@ -250,13 +266,17 @@ export class Monitor {
       try {
         const hits = await this.#scanOnce(task, state);
         await this.#dispatch(task, hits, state);
+        const recovered = state.failures > 0;
         state.failures = 0;
         state.lastSuccessAt = Date.now();
         cooldownSeconds = 0;
         this.alerted.delete(task.name);
+        // 抓成功了就说明登录态确实可用：把界面上的「登录失效/最近错误」收掉。
+        if (recovered) this.#emit(this.onRecover, { task }, '抓取恢复');
       } catch (error) {
         state.failures += 1;
         this.logger.error(`抓取失败（第 ${state.failures} 次）：${error.message}`, task.name);
+        this.#emit(this.onFailure, { task, error, failures: state.failures }, '抓取失败');
 
         // 「直接拒绝」要分两种情况，退避时间差两个数量级：
         //  - 刚刚复位了被标记的 cookie（`droppedCookies` 非空）→ 下一轮是一次**不同的**请求，
@@ -543,17 +563,6 @@ export class Monitor {
         );
       }
     }
-  }
-
-  /** 发送运行状态摘要：既能确认进程活着，也能及早发现「一直在跑但一条都没匹配」的配置问题。 */
-  async #heartbeat() {
-    const uptimeHours = ((Date.now() - this.startedAt) / 3600000).toFixed(1);
-    const lines = [`运行 ${uptimeHours} 小时，已记录 ${this.store.size} 条。`];
-    for (const [name, state] of this.stats) {
-      const last = state.lastSuccessAt ? new Date(state.lastSuccessAt).toLocaleString('zh-CN', { hour12: false }) : '从未';
-      lines.push(`· ${name}：轮询 ${state.cycles} 次，扫描 ${state.scanned} 条，命中 ${state.matched} 条，已推送 ${state.notified} 条，未判定字段 ${state.unknownSkips} 次，连续失败 ${state.failures} 次，最近成功 ${last}`);
-    }
-    await this.#notify({ title: '闲鱼监控心跳', body: lines.join('\n') });
   }
 
   /** 统一出口：所有面向用户的通知都经过这里，便于以后加限流或通道降级。 */

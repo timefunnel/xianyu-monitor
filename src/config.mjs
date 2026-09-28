@@ -215,7 +215,6 @@ export function withDefaults(config) {
       // 所以默认给一个很长的退避，等人工处理。
       riskControlCooldownSeconds: 1800,
       onUnknownField: 'pass',
-      heartbeatHours: 6,
       failureAlertThreshold: 3,
       notifyOnStart: true,
       ...config.monitor,

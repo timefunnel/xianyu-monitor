@@ -12,7 +12,7 @@
  * 都会被吸收进来落盘，重启不丢。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, statSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 
 /** cookie 文件默认放在状态文件旁边（`data/cookies.json`），省掉再引入一套路径解析。 */
@@ -74,6 +74,27 @@ export class FileCookieStore {
     this.logger = logger;
     /** 被服务端拒绝过的**具体值**（`{name, value}`），见 refuse()。 */
     this.refused = [];
+    /** 最近一次读到的文件 mtime（毫秒）；文件不存在时为 0。 */
+    this.fileMtimeMs = 0;
+    /**
+     * 本进程**自己**最后一次落盘后的 mtime。它和 `fileMtimeMs` 不一致，就说明文件是被别人
+     * 改的（最典型的是用户点了「重新登录」，另一处的登录流程写了新的一份）——调用方据此
+     * 决定要不要丢掉内存里的续期 cookie。
+     */
+    this.savedMtimeMs = 0;
+  }
+
+  /**
+   * 文件在本进程最后一次落盘之后，是否被别人改过。
+   *
+   * 为什么要问这个：搜索器会把服务端每次回发的 `_m_h5_tk` / `cookie2` 记在内存里并优先使用，
+   * 而「重新登录」是**另一个入口**写同一个文件。不认外部改写的话，老会话的 cookie 会盖住
+   * 刚写进来的新登录态——界面提示「登录成功」，搜索却照旧被风控拦住，看上去像重新登录没用。
+   *
+   * @returns {boolean} 是否被外部改过。
+   */
+  externallyChanged() {
+    return this.fileMtimeMs !== this.savedMtimeMs;
   }
 
   /**
@@ -82,7 +103,16 @@ export class FileCookieStore {
    */
   async load() {
     const jar = new Map();
-    if (!existsSync(this.file)) return jar;
+    if (!existsSync(this.file)) {
+      this.fileMtimeMs = 0;
+      return jar;
+    }
+    try {
+      this.fileMtimeMs = statSync(this.file).mtimeMs;
+    } catch {
+      // stat 失败的极少数情况（文件刚被换掉）不影响这次读取，下一次 load 再校准。
+      this.fileMtimeMs = 0;
+    }
     let raw;
     try {
       raw = JSON.parse(readFileSync(this.file, 'utf8'));
@@ -138,6 +168,13 @@ export class FileCookieStore {
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     renameSync(temp, this.file);
+    try {
+      // 记下"这就是我自己写的那一版"，供 externallyChanged() 区分外部改写。
+      this.savedMtimeMs = statSync(this.file).mtimeMs;
+    } catch {
+      this.savedMtimeMs = Date.now();
+    }
+    this.fileMtimeMs = this.savedMtimeMs;
   }
 
   /** 把内存里的 cookie 拼成请求头。 */

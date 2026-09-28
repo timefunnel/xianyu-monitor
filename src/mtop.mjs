@@ -184,6 +184,10 @@ export class MtopSearcher {
    */
   async #storedJar() {
     const jar = await this.cookies.load();
+    // cookie 文件被**外部**改写过（最典型的是用户点了「重新登录」，另一个入口写了新的一份）：
+    // 内存里这些续期值立刻作废，以文件为准。否则老会话的 `_m_h5_tk` / `cookie2` / `x5secdata`
+    // 会盖住刚写进来的新登录态——界面提示「登录成功」，搜索却照旧被风控拦住。
+    if (this.cookies.externallyChanged?.()) this.fresh.clear();
     for (const [name, cookie] of this.fresh) jar.set(name, cookie);
     return jar;
   }
@@ -280,6 +284,9 @@ export class MtopSearcher {
    * `FAIL_SYS_TOKEN_EMPTY`/`FAIL_SYS_TOKEN_ILLEGAL` 并通过 Set-Cookie 下发新 token，
    * 这时必须拿新 token 重签一次，否则整个链路就是坏的。它只在长时间闲置后出现，
    * 而且每次成功响应都会顺带续期，所以属于罕见情况。
+   *
+   * 失败路径上还会多花一次**只在被 RGV587 拦住时**才发生的 `loginuser.get`：那一次探测用来
+   * 把「真限流」和「登录态已失效」分开，两者 `ret` 完全相同而处置方式相反（见 throttle 分支）。
    *
    * @param {{keyword: string, name?: string}} task 任务配置。
    * @returns {Promise<{items: import('./rules.mjs').Item[], source: 'api', raw: unknown[], requests: number}>} 搜索结果。
@@ -388,6 +395,20 @@ export class MtopSearcher {
       }
 
       if (verdict.kind === 'throttle') {
+        // RGV587 有两种成因，而 `ret` 一模一样：真的被挤爆（等一会儿就好），和**登录态已经没了**
+        // （等多久都不会好）。分开它们的成本只有一次最轻的 loginuser.get，收益是别让人对着
+        // 「请调大 intervalSeconds」白等——实测 cookie 过期时，搜索接口回的就是这个 RGV587，
+        // 而同一个 jar 去问 loginuser.get 明确回 SESSION_EXPIRED。
+        const session = await this.checkSession();
+        if (session === 'invalid') {
+          const expired = new Error(
+            `搜索被拦（${verdict.message}），并且已确认登录态失效：这不是频率问题，调大间隔也没用。` +
+              '登录 cookie 已经过期/作废——请重新扫码登录（控制台顶部「重新登录」，或 node src/cli.mjs login），' +
+              '登录成功后会自动接上。',
+          );
+          expired.code = 'auth';
+          throw expired;
+        }
         const error = new Error(
           `请求被闲鱼拦截（${verdict.message}）。该错误码在「访问频率过高」和「登录态失效」两种情况下都会出现：` +
             '请先调大 intervalSeconds（建议 60 秒以上）重试；若仍然如此，再重新执行 node src/cli.mjs login。',

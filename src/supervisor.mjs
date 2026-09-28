@@ -64,6 +64,11 @@ export class Supervisor {
     this.session = 'unchecked';
     this.startedAt = null;
     this.lastError = null;
+    /**
+     * `lastError` 是不是**抓取失败**留下的。是的话，下一轮抓成功就把它收掉——
+     * 启动失败、登录失败那类错误由各自的流程负责清，不能被一次成功的抓取顺手抹掉。
+     */
+    this.lastErrorFromCycle = false;
     /** 扫码登录的进行状态：`active` 是否有流程在跑、`qrUrl` 给界面取二维码、`qrSvg` 是二维码本体。 */
     this.login = { active: false, qrUrl: '/api/login-qr.svg', qrSvg: null, status: null };
     /** 后台登录流程的完成信号；测试用它等收尾，避免轮询在测试结束后还在跑。 */
@@ -278,6 +283,55 @@ export class Supervisor {
   }
 
   /**
+   * 抓取失败时把结论同步到界面。
+   *
+   * 最要紧的一条是**登录态失效**：搜索被风控拦住时回的 `ret` 是 RGV587（「被挤爆啦」），
+   * 而真实原因可能只是 cookie 早就过期了。搜索器已经用一次 loginuser.get 把这种情况判成
+   * `auth`，这里就把 `session` 翻成失效——否则界面上始终是「登录正常」，只有日志面板在刷红字，
+   * 人根本不知道该去重新扫码。
+   *
+   * @param {{task: any, error: any}} info 失败信息（`failures` 只进日志，不进这句文案）。
+   */
+  #onCycleFailure({ task, error }) {
+    let changed = false;
+    if (error?.code === 'auth' && this.session !== 'invalid') {
+      this.session = 'invalid';
+      changed = true;
+    }
+    // 文案刻意不带连续次数：每轮都变的话，界面会每隔几分钟弹一次几乎一样的提示。
+    const detail = `任务「${task.name}」抓取失败：${error?.message ?? error}`;
+    if (this.lastError !== detail) {
+      this.lastError = detail;
+      this.lastErrorFromCycle = true;
+      changed = true;
+    }
+    if (changed) this.#stateChanged();
+  }
+
+  /**
+   * 连续失败之后又抓成功：把登录态和错误提示复位。
+   * 一次成功的搜索就是「登录态可用」最直接的证据。
+   *
+   * @param {{task: any}} info 恢复信息。
+   */
+  #onCycleRecover({ task }) {
+    let changed = false;
+    if (this.session === 'invalid') {
+      this.session = 'valid';
+      changed = true;
+    }
+    if (this.lastErrorFromCycle) {
+      this.lastError = null;
+      this.lastErrorFromCycle = false;
+      changed = true;
+    }
+    if (changed) {
+      this.logger.info(`任务「${task.name}」已恢复，登录态与错误提示复位`, 'web');
+      this.#stateChanged();
+    }
+  }
+
+  /**
    * 造一个「谁去搜」。
    *
    * 只有一条路：文件版 cookie + 直连 mtop，每轮恰好 1 次请求，**整个进程都不需要浏览器**。
@@ -295,6 +349,7 @@ export class Supervisor {
     if (this.running || this.starting) return { ok: true };
     this.starting = true;
     this.lastError = null;
+    this.lastErrorFromCycle = false;
     this.#stateChanged();
     try {
       // 先把配置文件读进来：界面上「保存配置 → 停止 → 启动」是用户心里的一次重启，
@@ -318,6 +373,8 @@ export class Supervisor {
         // 与「立即检查」共用同一个页面队列。
         serialize: (operation) => this.#queued(operation),
         onNotified: (item, task, options) => this.#recordHit(item, task, options),
+        onFailure: (info) => this.#onCycleFailure(info),
+        onRecover: (info) => this.#onCycleRecover(info),
       });
 
       this.running = true;
@@ -374,14 +431,22 @@ export class Supervisor {
    * 这样前端既能列出命中，也能在折叠区里逐条解释「为什么这条没推」——
    * 调过滤条件时，被排除的原因比命中的结果更有信息量。
    *
+   * @param {{task?: string}} [options] 传 `task` 就只测那一个任务。
    * @returns {Promise<{ok: boolean, results?: object[], error?: string}>} 每个任务的扫描与逐条判定结果。
    */
-  async check() {
+  async check({ task: only } = {}) {
     try {
+      // 指定任务时**不看 enabled**：调筛选条件通常发生在任务还停着的时候，那时更需要能先看一眼。
+      // 不指定则维持原语义——只测启用中的任务（脚本和命令行都靠这个默认）。
+      const targets = only
+        ? this.config.tasks.filter((entry) => String(entry.name) === String(only))
+        : this.config.tasks.filter((entry) => entry.enabled !== false);
+      if (only && targets.length === 0) return { ok: false, error: `没有这个任务：${only}` };
+
       const searcher = await this.#makeSearcher();
       const store = this.store ?? new SeenStore({ file: this.config.storage.stateFile }).load();
       const results = [];
-      for (const task of this.config.tasks.filter((entry) => entry.enabled !== false)) {
+      for (const task of targets) {
         const { items, source } = await this.#queued(() => searcher.search(task));
         const evaluated = [];
         let matched = 0;
@@ -538,6 +603,7 @@ export class Supervisor {
 
         this.session = 'valid';
         this.lastError = null;
+        this.lastErrorFromCycle = false;
         this.logger.info(`扫码登录成功，已写入 ${result.cookies} 个 cookie`, 'web');
         // 登录成功就把监控接上：服务生命周期归进程，页面上没有「启动」按钮，
         // 不在这里自动拉起的话，启动时会话失效的用户扫码后会一直停在「没在跑」。
