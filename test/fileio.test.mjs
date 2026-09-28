@@ -62,7 +62,8 @@ test('退化后仍然只读（:ro 挂载）时给出能直接照做的提示', (
 
   assert.throws(
     () => writeFileAtomic(file, '{}', { renameImpl: busy, writeImpl: readOnlyTarget }),
-    /不可写（EROFS）.*:ro.*chown/s,
+    /不可写（EROFS）[\s\S]*:ro[\s\S]*chown[\s\S]*目录[\s\S]*挂进容器/s,
+    '提示要同时给临时办法和一劳永逸的办法',
   );
 });
 

@@ -19,8 +19,11 @@ const MOUNT_POINT_ERRORS = new Set(['EBUSY', 'EXDEV', 'EPERM']);
 function describeWriteError(error, file) {
   if (error.code === 'EROFS' || error.code === 'EACCES') {
     return new Error(
-      `${file} 不可写（${error.code}）：它多半是只读挂载（:ro）或属主不是容器内运行的用户。` +
-        '容器部署时去掉 :ro，并把属主改成容器用户（例如 chown 1000:1000）。',
+      `${file} 不可写（${error.code}）：它多半是只读挂载（:ro），或属主不是容器内运行的用户` +
+        '（用 1Panel / 宿主机编辑器改过这个文件时，它会被 root 重建）。' +
+        '临时办法：去掉 :ro，并 chown 容器用户（例如 chown 1000:1000）。' +
+        '一劳永逸的办法：把**目录**挂进容器（./conf:/app/conf）——原子替换只需要目录可写，' +
+        '外部用 root 重建的文件照样能被替换掉。',
     );
   }
   return error;

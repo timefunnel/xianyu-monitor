@@ -9,13 +9,13 @@ services:
       # 通知里的时间按这个时区显示；宿主机是 UTC 时不设会看到差 8 小时的时间戳。
       TZ: ${TZ:-Asia/Shanghai}
     volumes:
-      # config.json **不能挂成 :ro**：控制台里改配置/切任务都要写它，只读挂载下会失败。
-      # 而且单文件挂载的挂载点无法被 rename 覆盖，保存时会报
-      # `EBUSY: rename '/app/config.json.tmp' -> '/app/config.json'`——代码里已对这种情形
-      # 退化为直接写入，代价是失去"原子替换"。想保留原子性就把**目录**挂进去。
-      # 首次部署前保证 data 与 config.json 对容器内 uid 1000 可写：
-      #   mkdir -p data && sudo chown -R 1000:1000 data config.json
-      - ./config.json:/app/config.json
+      # 挂**目录**而不是单个文件，这条最重要：
+      #  - 单文件挂载的挂载点无法被 rename 覆盖 → 保存配置报 EBUSY
+      #  - 用 1Panel / 宿主机编辑器改过 config.json 后，它会被 root 重建，容器(uid 1000) 直接写就 EACCES
+      # 挂目录后，原子替换（写临时文件再改名）只需要**目录**可写，上面两种情况都不会再出现。
+      # 首次部署前：mkdir -p conf data && cp config.example.json conf/config.json \
+      #             && sudo chown -R 1000:1000 conf data
+      - ./conf:/app/conf
       - ./data:/app/data
     logging:
       driver: json-file
