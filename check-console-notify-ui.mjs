@@ -46,6 +46,17 @@ const currentLogin = () => ({ ...loginState, qrReady: Boolean(loginState.qrSvg) 
 const supervisor = {
   configPath,
   subscribe: () => () => {},
+  // SSE 连上时会补发这些日志——窄屏排版那条检查靠它注入一条长日志。
+  recentLogs: [
+    {
+      type: 'log',
+      level: 'warn',
+      tag: '2k-144hz-monitor',
+      at: Date.now(),
+      message:
+        '命中并已推送：¥520 AOC 27寸2K Q27G2S/D高刷电竞显示器，170 Hz刷新率，打游戏、办公、追剧都很顺滑～屏幕大，色彩通透 https://www.goofish.com/item?id=1087678900436',
+    },
+  ],
   get login() {
     return currentLogin();
   },
@@ -285,6 +296,34 @@ try {
   await page.click('#loginClose');
   await page.waitForTimeout(300);
   check(calls.some((entry) => entry[0] === 'cancelLogin'), '关弹层会通知服务端取消登录');
+
+  // ---- 窄屏（手机）下的日志排版 ----
+  // 回归：日志行是 flex，时间/级别/标签三列固定宽（实测 400px 视口下共占 219px），
+  // 会把正文挤成右侧一条 111px 的窄缝——看起来就是"长日志被挤到右边、左边空着"。
+  await page.setViewportSize({ width: 400, height: 800 });
+  await page.reload({ waitUntil: 'domcontentloaded' });
+  await page.waitForTimeout(1200);
+  await page.click('.nav-item[data-route="logs"]');
+  await page.waitForTimeout(1200);
+  const narrow = await page.evaluate(() => {
+    const row = document.querySelector('.log-row');
+    const message = row?.querySelector('.log-msg');
+    return {
+      rows: document.querySelectorAll('.log-row').length,
+      rowWidth: row ? Math.round(row.getBoundingClientRect().width) : 0,
+      messageWidth: message ? Math.round(message.getBoundingClientRect().width) : 0,
+      docScrollWidth: document.documentElement.scrollWidth,
+      viewport: window.innerWidth,
+    };
+  });
+  check(narrow.rows > 0, '窄屏下日志有内容（SSE 补发）', `${narrow.rows} 行`);
+  check(
+    narrow.messageWidth >= narrow.rowWidth * 0.8,
+    '窄屏下正文占满整行，而不是被挤成右侧窄缝',
+    `正文 ${narrow.messageWidth}px / 行宽 ${narrow.rowWidth}px`,
+  );
+  check(narrow.docScrollWidth <= narrow.viewport, '窄屏下没有横向溢出', `${narrow.docScrollWidth} vs ${narrow.viewport}`);
+  await page.screenshot({ path: 'data/console-mobile-log.png' }).catch(() => {});
   // ---- 老进程场景：前端新、服务端旧（/api/state 里没有 channelTypes）----
   const stale = { ...supervisor, snapshot: () => ({ ...supervisor.snapshot(), channelTypes: undefined }) };
   const staleConsole = await startWebConsole({ supervisor: stale, port: 0, host: '127.0.0.1', token: '', logger: { info() {}, warn() {}, error() {} }, openBrowser: false });

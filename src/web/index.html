@@ -914,6 +914,11 @@
        否则 100 条命中历史会把页面拉成好几千像素长。 */
     .hits { max-height: 60vh; }
     .log { height: 320px; min-height: 0; }
+    /* 日志行在窄屏改成两行：时间/级别/标签占一行，正文另起一行占满整宽。
+       否则那三列固定宽（实测 400px 视口下共占 219px）会把正文挤成右侧一条 111px 的窄缝，
+       看起来就是"长日志被挤到右边、左边空着"。 */
+    .log-row { flex-wrap: wrap; row-gap: 2px; }
+    .log-msg { flex: 1 1 100%; }
     textarea.config-area { height: 320px; min-height: 0; }
     .titlebar { flex-wrap: wrap; gap: 10px; padding: 8px 12px; }
     .titlebar-status { margin-left: 0; }

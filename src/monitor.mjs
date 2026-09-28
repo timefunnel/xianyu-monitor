@@ -66,6 +66,8 @@ export class Monitor {
     this.stats = new Map();
     /** 已经就「连续失败」发过告警的任务，避免每轮都刷屏。 */
     this.alerted = new Set();
+    /** maxAgeMinutes 那条提示只讲一次，避免每次任务重启都刷一遍。 */
+    this.warnedMaxAge = false;
     /** 上次真正发起搜索的时间，用于跨任务的全局请求间隔闸（见 #respectRequestGap）。 */
     this.lastRequestAt = 0;
     this.serialize = serialize ?? ((operation) => this.#queued(operation));
@@ -252,10 +254,12 @@ export class Monitor {
   async #taskLoop(control) {
     const { task, state } = control;
     this.logger.info(`开始监控：${task.keyword}（${describeFilters(task.filters, task.nativeFilters)}）`, task.name);
-    if (typeof task.filters?.maxAgeMinutes === 'number' && MISSING_FIELDS.has('publishTime')) {
-      this.logger.warn(
-        'maxAgeMinutes 依赖发布时间，但闲鱼 PC 搜索响应基本不返回这个字段，因此它多半按「时间未知」放行而没有真正过滤。' +
-          '想只盯新货，靠去重表（同一条只推一次）比靠时间窗更可靠。',
+    if (typeof task.filters?.maxAgeMinutes === 'number' && MISSING_FIELDS.has('publishTime') && this.warnedMaxAge !== true) {
+      // 只讲一次，而且降成 info：这是「配置里有项不会真正生效」的说明，不是运行期故障，
+      // 每次任务重启都 warn 一遍纯属噪音（`check` 命令里已经会提示这件事）。
+      this.warnedMaxAge = true;
+      this.logger.info(
+        '提示：maxAgeMinutes 不会真正过滤（闲鱼 PC 搜索响应基本不返回发布时间，已按「时间未知」放行），防重复靠去重表',
         task.name,
       );
     }
