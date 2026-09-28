@@ -14,10 +14,22 @@
 - 支持价格、地区、发布时间、关键词、正则、卖家等筛选条件
 - 已推送商品自动去重，状态保存在本地
 - 支持多种通知渠道和 App / 网页跳转
-- 内置 Web 控制台，可管理任务、查看命中与日志、测试通知
+- 内置 Web 控制台，可管理任务、查看命中与日志、测试通知；控制台带登录密码闸
 - 支持 Windows、Linux、NAS、Docker 和 systemd
+- **有官方 Docker 镜像**：`ghcr.io/timefunnel/xianyu-monitor`（公开，免凭据拉取），见 [Docker 部署](#docker-部署)
 
 ## 快速开始
+
+### 用 Docker（最快）
+
+```bash
+docker pull ghcr.io/timefunnel/xianyu-monitor:latest
+```
+
+只要三个文件（`config.json`、`.env`、`docker-compose.yml`）就能跑起来，不需要克隆仓库、不需要装 Node。
+详见 [Docker 部署](#docker-部署)。
+
+### 用 Node
 
 要求：Node.js 20.11 或更高版本。
 
@@ -201,20 +213,47 @@ npm run login
 
 ## Docker 部署
 
-先准备 `config.json`、`.env` 和可写的 `data/` 目录：
+**已发布镜像，可以直接拉，不需要克隆仓库、不需要装 Node：**
 
 ```bash
-mkdir -p data
-sudo chown -R 1000:1000 data
-docker compose run --rm xianyu-monitor node src/cli.mjs login
-docker compose run --rm xianyu-monitor node src/cli.mjs check
-docker compose up -d --build
+docker pull ghcr.io/timefunnel/xianyu-monitor:latest
+```
+
+镜像在 GHCR 上且是公开的，**拉取不需要任何凭据**。标签形如 `latest` / `0.1` / `0.1.0`；
+生产建议固定版本（如 `:0.1.0`）而不是 `:latest`，这样升级与回滚都是改一个数字。
+
+最快的起法（只要三个文件：`config.json`、`.env`、`docker-compose.yml`）：
+
+```bash
+mkdir -p data && sudo chown -R 1000:1000 data
+# 放好 config.json（见「配置」一节，web.host 设为 0.0.0.0、并设 web.password）
+# 放好 .env（WEB_PASSWORD 与通知密钥）
+docker compose up -d                 # 用 deploy/compose.server.yml，拉镜像启动
+docker compose exec xianyu-monitor node src/cli.mjs login   # 终端里出二维码，手机扫
 docker compose logs -f
 ```
 
-仓库根目录的 `docker-compose.yml` 默认只运行命令行监控。需要通过反向代理使用 Web 控制台时，请使用 [`deploy/compose.server.yml`](deploy/compose.server.yml)，完整步骤见 [`deploy/README-部署.md`](deploy/README-部署.md)。
+想自己构建也可以：把 compose 里的 `image:` 换成 `build: .`，然后 `docker compose up -d --build`。
+
+> 容器内以 uid 1000 运行，`data/` 与 `config.json` 的属主要给它（`chown 1000:1000`）；
+> `config.json` **不要**挂成 `:ro`，控制台保存配置需要写它。两个坑的细节见 [`deploy/README-部署.md`](deploy/README-部署.md)。
+
+根目录的 `docker-compose.yml` 默认只跑命令行监控；要用 Web 控制台（并放在反向代理后面）请用 [`deploy/compose.server.yml`](deploy/compose.server.yml)。
 
 群晖等 NAS 可以用 Container Manager 导入 Compose 文件，并将 `config.json` 与 `data/` 映射到持久化目录。
+
+### 发版
+
+```bash
+git tag v0.1.1 && git push origin v0.1.1
+```
+
+推 `v*` tag 会触发 [`.github/workflows/docker.yml`](.github/workflows/docker.yml) 构建并推送镜像
+（用内置的 `GITHUB_TOKEN`，仓库里不需要配任何密钥）。之后在服务器上：
+
+```bash
+docker compose pull && docker compose up -d
+```
 
 ## 命令
 
