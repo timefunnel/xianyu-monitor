@@ -469,7 +469,10 @@ export class Monitor {
   }
 
   /**
-   * 推送命中项。超过 `notify.maxPerCycle` 的部分合并成一条摘要，避免刷屏又不丢消息。
+   * 推送命中项。
+   *
+   * `notify.maxPerCycle` 是「一轮最多逐条发几条」：只有一轮命中多到 `cap + 4` 以上
+   * 才会把多余部分合并成一条摘要（否则全是逐条发，每条都带自己的跳转链接）。
    * 推送至少成功一个渠道才写入去重表，因此渠道整体故障时下一轮会重试。
    *
    * 静默模式下仍然写去重表与命中历史——界面照常能看到这批命中，只是不发通知；
@@ -497,8 +500,15 @@ export class Monitor {
     }
 
     const cap = this.config.notify.maxPerCycle ?? 8;
-    const immediate = hits.slice(0, cap);
-    const overflow = hits.slice(cap);
+    // 只有一轮命中多到**真会刷屏**时才汇总，否则全部逐条发。
+    //
+    // 原来的做法是"超过 cap 就汇总"，于是 9 条命中会变成 8 条通知 + 一条「还有 1 条命中」——
+    // 那条汇总既没有可点的链接（Bark 上点了没反应），本身也没信息量，纯属骚扰。
+    // 现在的规则：汇总至少要有这一条兜得住 5 条，否则一律逐条发（每条都带自己的链接）。
+    const DIGEST_MIN_ITEMS = 4;
+    const individualCount = hits.length > cap + DIGEST_MIN_ITEMS ? cap : hits.length;
+    const immediate = hits.slice(0, individualCount);
+    const overflow = hits.slice(individualCount);
 
     for (const item of immediate) {
       const message = formatItem(item, task, { showTaskName: this.showTaskName });
@@ -535,7 +545,14 @@ export class Monitor {
     }
 
     if (overflow.length > 0) {
-      const body = overflow.map((item) => `· ${typeof item.price === 'number' ? `¥${item.price}` : '价格未知'} ${condenseTitle(item.title)}`).join('\n');
+      // 每条都带上网页链接：汇总消息本身没有可点的跳转目标（Bark 上点了没反应），
+      // 至少让链接在正文里可见、可复制；Telegram / 钉钉这类会把它变成可点文本。
+      const body = overflow
+        .map(
+          (item) =>
+            `· ${typeof item.price === 'number' ? `¥${item.price}` : '价格未知'} ${condenseTitle(item.title)}\n  ${item.url ?? ''}`,
+        )
+        .join('\n');
       const results = await sendAll(
         this.config.notify.channels,
         { title: `还有 ${overflow.length} 条命中 · ${task.name}`, body },

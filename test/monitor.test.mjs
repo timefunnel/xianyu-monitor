@@ -194,13 +194,30 @@ test('所有渠道推送失败时不写去重表，下一轮重试', async () =>
   assert.equal(store.size, 0, '失败不能被标记为已推送');
 });
 
-test('超过 maxPerCycle 的命中合并成一条汇总消息', async () => {
+test('略超 maxPerCycle 时全部逐条发，不再塞一条「还有 N 条命中」', async () => {
+  // 回归：一轮 9 条命中曾经变成 8 条通知 + 一条「还有 1 条命中」——那条汇总没有可点的链接
+  // （Bark 上点了没反应），本身也没信息量。现在只有溢出多到真会刷屏才汇总。
   const items = [item({ id: '100000000001' }), item({ id: '100000000002' }), item({ id: '100000000003' })];
   const { requests, store } = await runRounds([items, []], { maxPerCycle: 2 });
+  assert.equal(requests.length, 3, '3 条都该逐条发');
+  assert.equal(requests.filter((entry) => /还有 .* 条命中/.test(entry.body.title)).length, 0, '不该出现汇总消息');
+  for (const request of requests) {
+    assert.ok(request.body.url, '每条都要带自己的跳转链接，点得开');
+  }
+  assert.equal(store.size, 3);
+});
+
+test('一轮命中多到会刷屏时才汇总，且汇总至少装得下 5 条', async () => {
+  const many = Array.from({ length: 9 }, (_unused, index) => item({ id: `10000000000${index}` }));
+  const { requests, store } = await runRounds([many, []], { maxPerCycle: 2 });
+  // cap=2，9 > 2+4，所以 2 条逐条 + 1 条汇总（装 7 条）
   assert.equal(requests.length, 3, '2 条即时 + 1 条汇总');
-  assert.equal(requests[2].body.title, '还有 1 条命中 · t');
-  assert.ok(requests[2].body.body.startsWith('· ¥2999 MacBook Air M2 国行'));
-  assert.equal(store.size, 3, '汇总里的商品也要记为已推送');
+  const digest = requests.find((entry) => /还有 .* 条命中/.test(entry.body.title));
+  assert.ok(digest, '这种情况才该有汇总');
+  assert.equal(digest.body.title, '还有 7 条命中 · t');
+  assert.match(digest.body.body, /· ¥2999/, '汇总里要有商品');
+  assert.match(digest.body.body, /https:\/\/www\.goofish\.com\/item\?id=/, '汇总里每条都要带链接（Bark 点不动，至少可见）');
+  assert.equal(store.size, 9, '汇总里的商品也要记为已推送');
 });
 
 test('关键词无结果时不会推送任何消息', async () => {
