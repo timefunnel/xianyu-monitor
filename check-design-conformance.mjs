@@ -154,7 +154,7 @@ check('可见文本里没有 emoji', emoji.length === 0, emoji.join(' / '));
 await page.goto(`${base}/#/overview`, { waitUntil: 'domcontentloaded' });
 await page.waitForTimeout(6000); // 至少跨过一次 5 秒状态轮询
 const iconless = await page.evaluate(() => {
-  const ids = ['powerBtn', 'checkBtn', 'notifyBtn', 'loginBtn', 'restartBtn', 'themeBtn', 'notifySwitch', 'taskNewBtn'];
+  const ids = ['checkBtn', 'loginBtn', 'themeBtn', 'notifySwitch', 'taskNewBtn'];
   return ids
     .map((id) => document.getElementById(id))
     .filter((el) => el && el.querySelectorAll('svg').length === 0)

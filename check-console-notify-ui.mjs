@@ -126,6 +126,13 @@ try {
   // 视觉改动光靠断言看不出好坏，留一张图。
   await page.screenshot({ path: 'data/console-channels.png' }).catch(() => {});
 
+  // 渠道卡片上的「测试」也要在**配置页**看得到结果（它以前写进「概览」路由里的一块区域，
+  // 在配置页点完同样只有一条 toast）。
+  await page.locator('#channelList .card').first().locator('button', { hasText: '测试' }).click();
+  await page.waitForTimeout(700);
+  check(await page.locator('#notifyTestResult').isVisible(), '渠道卡「测试」的结果显示在配置页上');
+  check(/发送成功|发送失败/.test(await page.locator('#notifyTestResult').innerText()), '结果写明了成功还是失败');
+
   // 走「编辑」打开弹层——和用户路径一致
   await page.locator('#channelList .card').first().locator('button', { hasText: '编辑' }).click();
   await page.waitForTimeout(300);
@@ -139,6 +146,18 @@ try {
   const prefilled = await page.locator('#cf-key').inputValue();
   check(prefilled === 'abc123def456ghi', '编辑时回填原值');
 
+  // 「测试这条」的结果必须**就地**出现在弹层里。写进配置页那块的话，结果会被弹层遮罩挡在后面，
+  // 而提示语还写着「原因见下方结果」。
+  const configResultBefore = await page.locator('#notifyTestResult').innerText().catch(() => '');
+  await page.click('#channelFormTest');
+  await page.waitForTimeout(700);
+  check(await page.locator('#channelTestResult').isVisible(), '「测试这条」的结果就地显示在弹层里');
+  check(/发送成功|发送失败/.test(await page.locator('#channelTestResult').innerText()), '结果写明了成功还是失败');
+  check(
+    (await page.locator('#notifyTestResult').innerText().catch(() => '')) === configResultBefore,
+    '弹层里的测试只写弹层，不去动配置页那块结果',
+  );
+
   // 取消
   await page.click('#channelFormCancel');
   await page.waitForTimeout(250);
@@ -150,6 +169,57 @@ try {
   await page.click('#channelX');
   await page.waitForTimeout(250);
   check(!(await page.locator('#channelMask').isVisible()), '右上角 X 也能关掉弹层');
+
+  // ---- 任务「测试」：按钮在卡片上，结果就贴在卡片下面 ----
+  // 这条盯的是当初最难懂的地方：测试曾经是标题栏上一个全局按钮，结果统一写到「概览」页里，
+  // 在任务页点完只弹一个 toast——用户根本找不到结果，也不知道它到底测了什么。
+  await page.click('.nav-item[data-route="tasks"]');
+  await page.waitForTimeout(400);
+  check(
+    (await page.getByRole('button', { name: /测试通知/ }).count()) === 0 &&
+      (await page.getByRole('button', { name: /干跑|立即检查/ }).count()) === 0,
+    '标题栏不再放全局「测试 / 干跑检查」按钮（测试入口在各自的任务卡与渠道卡上）',
+  );
+
+  check((await page.locator('#tasks .card button', { hasText: '测试' }).count()) >= 1, '每个任务卡片上有「测试」按钮');
+
+  supervisor.check = async () => ({
+    ok: true,
+    results: [
+      {
+        task: 't',
+        keyword: '显示器',
+        scanned: 2,
+        source: 'api',
+        hits: [
+          { id: '1', title: 'AOC 27寸 2K 180Hz', price: 568, area: '上海', seller: 'b', url: 'https://www.goofish.com/item?id=1' },
+          { id: '2', title: '便宜的老屏', price: 100, area: '上海', seller: 'b', url: 'https://www.goofish.com/item?id=2', reasons: ['价格 100 低于 minPrice 500'] },
+        ],
+      },
+    ],
+  });
+  await page.locator('#tasks .card button', { hasText: '测试' }).first().click();
+  await page.waitForTimeout(700);
+  check(await page.locator('#tasks .card-test').isVisible(), '点任务卡「测试」后，结果就贴在卡片下面');
+  check((await page.locator('#tasks .card-test .hit').count()) === 1, '命中的商品渲染成一行');
+  check(/扫描 2 条 · 命中 1 条/.test(await page.locator('#tasks .card-test').innerText()), '结果带上扫描/命中摘要');
+  check(/未命中 1 条/.test(await page.locator('#tasks .card-test').innerText()), '未命中的商品在折叠区里等着展开');
+  await page.locator('#tasks .card-test details.skipped summary').click();
+  await page.waitForTimeout(200);
+  check(/过滤原因/.test(await page.locator('#tasks .card-test').innerText()), '展开后能看到这一条为什么被过滤');
+  await page.screenshot({ path: 'data/console-task-test.png' }).catch(() => {});
+
+  // 结果不能因为统计每几秒刷新一次就消失：卡片是整块重绘的。
+  await page.evaluate(async () => {
+    tasksSignature = null;
+    renderTasks();
+  });
+  await page.waitForTimeout(200);
+  check(await page.locator('#tasks .card-test').isVisible(), '卡片重绘之后测试结果仍在（存在内存里而不是只塞 DOM）');
+
+  await page.locator('#tasks .card-test button', { hasText: '收起' }).click();
+  await page.waitForTimeout(250);
+  check((await page.locator('#tasks .card-test').count()) === 0, '「收起」能把结果收掉');
 
   // 重推按钮
   await page.click('.nav-item[data-route="hits"]');

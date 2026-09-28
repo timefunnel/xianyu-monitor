@@ -1,5 +1,6 @@
-// 临时验收脚本：用真实浏览器加载控制台，抓 JS 错误并点一次「测试通知」。
-// 只访问控制台的本地接口，「测试通知」走 Bark、不碰闲鱼，因此不会消耗抓取配额。
+// 临时验收脚本：用真实浏览器加载控制台，抓 JS 错误，并在配置页点一次「测试全部」。
+// 「测试全部」只往已配置的通知渠道发一条消息、不碰闲鱼，因此不会消耗抓取配额。
+// （任务的「测试」会真的搜一次闲鱼，不适合放进无脑跑一遍的脚本里。）
 import { chromium } from 'playwright';
 
 const base = process.env.CONSOLE_URL ?? 'http://127.0.0.1:7788';
@@ -28,7 +29,7 @@ try {
   console.log('  会话状态:', ['登录正常', '登录失效', '会话未知', '未检查'].filter(has).join('/') || '未找到');
   console.log('  任务关键词:', has('2K') ? '有' : '未找到');
   console.log('  日志面板:', has('日志') ? '有' : '未找到');
-  console.log('  按钮:', ['立即检查', '测试通知', '重新登录', '新建任务'].filter(has).join(' / '));
+  console.log('  按钮:', ['重新登录', '新建任务', '测试全部'].filter(has).join(' / '));
 
   // 服务生命周期不归页面管：监控随进程启动、随进程退出，页面上不该有启停/重启入口。
   for (const label of ['停止', '启动', '重启']) {
@@ -38,17 +39,35 @@ try {
   }
   console.log('  无启停/重启入口:', (await page.getByRole('button', { name: /^(启动|停止|重启)$/ }).count()) === 0 ? '是' : '否');
 
-  // 点「测试通知」：只发 Bark，不消耗闲鱼配额，正好验证按钮 → 接口 → 通知整条链路。
-  const button = page.getByRole('button', { name: /测试通知/ }).first();
+  // 测试入口只放在被测试的对象旁边：任务卡上一个「测试」、通知渠道区一个「测试」+「测试全部」。
+  // 标题栏不再有全局的「测试通知 / 干跑检查」——按钮在那儿、结果却写在别处，是最难懂的一种布局。
+  const stray = await page.getByRole('button', { name: /测试通知|干跑检查|立即检查/ }).count();
+  console.log('  标题栏无全局测试按钮:', stray === 0 ? '是' : `否（${stray} 个）`);
+  if (stray > 0) errors.push('标题栏不该再有全局的「测试通知 / 干跑检查」按钮');
+
+  await page.click('.nav-item[data-route="tasks"]');
+  await page.waitForTimeout(500);
+  const taskTests = await page.locator('#tasks .card button', { hasText: '测试' }).count();
+  console.log('  任务卡上的「测试」按钮:', taskTests + ' 个');
+  if (taskTests === 0) errors.push('任务卡上找不到「测试」按钮');
+
+  // 配置页点「测试全部」：验证按钮 → 接口 → 通知整条链路，结果要出现在**同一页**。
+  await page.click('.nav-item[data-route="config"]');
+  await page.waitForTimeout(500);
+  const button = page.getByRole('button', { name: /测试全部/ }).first();
   if ((await button.count()) === 0) {
-    errors.push('页面上找不到「测试通知」按钮');
+    errors.push('配置页找不到「测试全部」按钮');
   } else {
     await button.click();
     await page.waitForTimeout(6000);
-    const after = await page.evaluate(() => document.body.innerText);
-    const ok = /成功|已发送|送达/.test(after);
-    console.log('  点「测试通知」后的提示:', ok ? '出现成功提示' : '未见成功提示');
-    if (!ok) errors.push('点「测试通知」后没有看到成功提示');
+    const result = await page.evaluate(() => {
+      const box = document.getElementById('notifyTestResult');
+      if (!box || box.hidden) return '';
+      return box.innerText.trim();
+    });
+    console.log('  点「测试全部」后的结果:', result ? result.replace(/\s+/g, ' ').slice(0, 80) : '没看到结果');
+    if (!result) errors.push('点「测试全部」后没看到逐条结果');
+    else if (!/成功|失败/.test(result)) errors.push('「测试全部」的结果里既没有成功也没有失败，看不出结论');
   }
 
   await page.screenshot({ path: 'data/console-screenshot.png', fullPage: true });

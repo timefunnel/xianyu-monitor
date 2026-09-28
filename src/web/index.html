@@ -540,7 +540,20 @@
   .hit-action svg { width: 12px; height: 12px; }
   .hit-open svg { width: 12px; height: 12px; }
 
-  /* ---------- 立即检查结果 ---------- */
+  /* ---------- 任务「测试」的结果 ---------- */
+  /* 结果紧跟在卡片下面，和卡片同宽；高度封顶，一次几十条商品也不会把任务列表挤没。 */
+  .card-test {
+    margin: -6px 0 10px;
+    padding: 12px 14px;
+    border: 1px solid var(--border);
+    border-radius: var(--radius);
+    background: var(--panel);
+    max-height: 320px;
+    overflow-y: auto;
+  }
+  .card-test-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
+  .card-test-head .btn-mini { margin-left: auto; }
+
   .check-task + .check-task { margin-top: 14px; padding-top: 14px; border-top: 1px solid var(--border); }
   .check-head { display: flex; align-items: baseline; gap: 8px; flex-wrap: wrap; }
   .check-name { font-weight: 600; }
@@ -565,6 +578,10 @@
   .notify-row { font-size: 12.5px; padding: 6px 10px; border-radius: 8px; border: 1px solid var(--border); word-break: break-word; }
   .notify-row.ok { color: var(--green-fg); border-color: var(--green-bd); background: var(--green-bg); }
   .notify-row.err { color: var(--red-fg); border-color: var(--red-bd); background: var(--red-bg); }
+  /* 渠道测试结果的落点：弹层里一条、配置页里一块。
+     都紧挨着触发它的按钮，避免「点了却不知道结果写到哪去了」。 */
+  #channelTestResult { margin-top: 12px; max-height: 180px; overflow-y: auto; }
+  #notifyTestResult { margin-top: 10px; max-height: 200px; overflow-y: auto; }
 
   /* ---------- 实时日志 ---------- */
   .log-tools { display: flex; gap: 8px; flex-wrap: wrap; align-items: center; margin-bottom: 8px; }
@@ -956,14 +973,6 @@
     </div>
 
     <div class="titlebar-actions">
-      <button class="btn" id="checkBtn" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M21 12a9 9 0 1 1-2.64-6.36"/><path d="M21 3v6h-6"/></svg>
-        <span>立即检查</span>
-      </button>
-      <button class="btn" id="notifyBtn" type="button">
-        <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M6 8a6 6 0 0 1 12 0c0 7 3 9 3 9H3s3-2 3-9"/><path d="M10.3 21a1.94 1.94 0 0 0 3.4 0"/></svg>
-        <span>测试通知</span>
-      </button>
       <button class="btn" id="loginBtn" type="button">
         <svg viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true"><path d="M15 3h4a2 2 0 0 1 2 2v14a2 2 0 0 1-2 2h-4"/><path d="m10 17 5-5-5-5"/><path d="M15 12H3"/></svg>
         <span>重新登录</span>
@@ -1022,18 +1031,13 @@
         </div>
       </div>
 
+      <!-- 结果区不再挂在页面顶部：每个「测试」按钮的结果都渲染在自己旁边（任务卡、渠道卡、渠道弹层），
+           从哪个按钮点就在哪儿看结果，不必先去猜它写到了哪里。 -->
       <div class="routes" id="routes">
         <!-- 概览 -->
         <section class="route is-active" data-route="overview">
           <div class="stat-grid" id="overviewStats"></div>
           <p class="stat-note">累计值存在 data/state.json 里，重启不清零。「累计命中」只算每轮新出现且通过筛选的商品，同一件不重复计数。静默推送期间命中照常累加、推送不增加；「去重表」是「不再重复推送」的商品集合，用 <code class="mono">cli once</code> 单跑过的也会记进去，所以可能略多于累计推送。</p>
-          <div class="section" id="resultSection" hidden>
-            <h2 class="section-title">操作结果<span class="count" id="resultHint"></span></h2>
-            <div class="panel">
-              <div id="checkResult"></div>
-              <div id="notifyResult"></div>
-            </div>
-          </div>
           <div class="section">
             <h2 class="section-title">最近命中<span class="count" id="recentCount"></span></h2>
             <div class="panel panel-scroll" id="recentHits"></div>
@@ -1094,6 +1098,7 @@
                 <button class="btn" type="button" id="channelTestAll">测试全部</button>
                 <span class="muted" style="font-size:12.5px">商品推送的总开关在右上角</span>
               </div>
+              <div id="notifyTestResult" hidden></div>
             </div>
           </div>
           <div class="section">
@@ -1146,6 +1151,7 @@
     </div>
     <div class="modal-note" id="channelNote">填完可以先点「测试这条」发一条，通过再保存。</div>
     <ol class="problems" id="channelFormProblems" hidden></ol>
+    <div id="channelTestResult" hidden></div>
 
     <div class="form-group">
       <div class="field wide">
@@ -2022,10 +2028,43 @@ function createTaskActions(entry) {
     row.appendChild(button);
     return button;
   };
+  const test = add('测试', '', () => runTaskTest(entry.task, test));
+  test.title =
+    '真搜一次这个关键词，看现在会命中什么、没命中的被哪条条件挡下；只匹配不推送，也不写去重表。' +
+    '会消耗 1 次搜索请求（停用的任务也能测）';
   add('编辑', '', () => openTaskEditor('edit', ref, entry.task));
   add('复制', '', () => openTaskEditor('copy', ref, entry.task));
   add('删除', 'danger', (event) => requestDeleteTask(event.currentTarget, entry));
   return row;
+}
+
+/**
+ * 每个任务最近一次「测试」的结果（按任务名）。存在这里而不是只塞进 DOM：
+ * 卡片会随统计变化整块重绘，节点级的结果会被冲掉。
+ */
+const taskTests = new Map();
+
+/** 造任务卡下面那块测试结果。 */
+function createTaskTestBlock(task, result) {
+  const name = String(task.name);
+  const block = el('div', 'card-test');
+  const head = el('div', 'card-test-head');
+  const items = Array.isArray(result.hits) ? result.hits : [];
+  const matched = items.filter((item) => !item.reasons || item.reasons.length === 0);
+  head.appendChild(el('span', 'check-name', '测试结果'));
+  head.appendChild(
+    el('span', 'muted', '扫描 ' + formatNumber(result.scanned) + ' 条 · 命中 ' + formatNumber(matched.length) + ' 条 · 只匹配不推送'),
+  );
+  const close = el('button', 'btn-mini', '收起');
+  close.type = 'button';
+  close.addEventListener('click', () => hideTaskTest(name));
+  head.appendChild(close);
+  block.appendChild(head);
+
+  const body = el('div');
+  renderCheckResults([result], body, { withHead: false });
+  block.appendChild(body);
+  return block;
 }
 
 /** 删除前的页面内确认：把卡片底部换成确认条，不用 confirm()。 */
@@ -2220,6 +2259,8 @@ function renderTasks() {
     const kept = task.name ? confirming.get(String(task.name)) : null;
     if (kept) {
       box.appendChild(kept);
+      const keptTest = taskTests.get(String(task.name));
+      if (keptTest) box.appendChild(createTaskTestBlock(task, keptTest));
       continue;
     }
     const card = el('div', 'card');
@@ -2278,6 +2319,11 @@ function renderTasks() {
       }
     }
     box.appendChild(card);
+    // 测试结果紧跟在卡片下面；它来自 taskTests，所以卡片每轮重绘后仍然在。
+    if (task.name) {
+      const tested = taskTests.get(String(task.name));
+      if (tested) box.appendChild(createTaskTestBlock(task, tested));
+    }
   }
 }
 
@@ -2380,18 +2426,26 @@ async function refreshState() {
 }
 
 /* ==========================================================================
-   控制按钮：立即检查、测试通知、重新登录
-   （服务启停不在这里：监控随进程启动、随进程退出）
+   测试按钮：任务卡上的「测试」、通知渠道的「测试」
+   每条测试都把自己的结果渲染在**触发它的那块界面旁边**（任务卡下方、渠道区、渠道弹层）。
+   以前这些结果统一写到页面顶部一个「操作结果」区里，而那个区只在「概览」路由里——
+   在任务页或配置页点完，用户除了一个 toast 什么也看不到。
    ========================================================================== */
 
-/** 渲染 /api/check 的干跑结果：任务摘要 + 命中项 + 可展开的未命中原因。 */
-function renderCheckResults(results) {
-  const box = $('checkResult');
-  box.textContent = '';
+/**
+ * 渲染一次任务测试的结果：摘要 + 命中项 + 可展开的未命中原因。
+ *
+ * @param {object[]} results 每个任务一块（`/api/check` 的 results）。
+ * @param {HTMLElement} box 渲染到哪里。
+ * @param {{withHead?: boolean, emptyHint?: string}} [options]
+ *   `withHead` 为 false 时不再重复任务名与关键词（任务卡上已经写着了）。
+ */
+function renderCheckResults(results, box, options = {}) {
   const list = Array.isArray(results) ? results : [];
+  box.textContent = '';
 
   if (list.length === 0) {
-    box.appendChild(el('div', 'empty', '检查完成，没有返回任何任务结果'));
+    box.appendChild(el('div', 'empty', options.emptyHint || '没有返回任何任务结果'));
     return;
   }
 
@@ -2401,15 +2455,17 @@ function renderCheckResults(results) {
     // 服务端可能只返回命中项（此时全部计入命中），也可能把被过滤项一起返回并带上 reasons。
     const matched = items.filter((item) => !item.reasons || item.reasons.length === 0);
     const skipped = items.filter((item) => item.reasons && item.reasons.length > 0);
-
-    const head = el('div', 'check-head');
-    head.appendChild(el('span', 'check-name', task.task || '（未命名任务）'));
     const summary = ['扫描 ' + formatNumber(task.scanned) + ' 条', '命中 ' + formatNumber(matched.length) + ' 条'];
-    if (task.keyword) summary.push('关键词「' + task.keyword + '」');
-    if (task.source === 'api') summary.push('来源：接口');
-    else if (task.source === 'dom') summary.push('来源：页面兜底');
-    head.appendChild(el('span', 'muted', summary.join(' · ')));
-    block.appendChild(head);
+
+    if (options.withHead !== false) {
+      const head = el('div', 'check-head');
+      head.appendChild(el('span', 'check-name', task.task || '（未命名任务）'));
+      if (task.keyword) summary.push('关键词「' + task.keyword + '」');
+      if (task.source === 'api') summary.push('来源：接口');
+      else if (task.source === 'dom') summary.push('来源：页面兜底');
+      head.appendChild(el('span', 'muted', summary.join(' · ')));
+      block.appendChild(head);
+    }
 
     const hitBox = el('div', 'check-hits');
     if (matched.length === 0) {
@@ -2441,13 +2497,13 @@ function renderCheckResults(results) {
 }
 
 /**
- * 把逐渠道的测试结果渲染到「操作结果」区。
+ * 把逐渠道的测试结果渲染成一行一条。
  * @param {object[]} list 服务端返回的 results。
+ * @param {HTMLElement} box 渲染到哪：配置页的渠道区、渠道弹层，各用各的容器。
  * @returns {number} 成功个数。
  */
-function renderNotifyResults(list) {
-  $('resultSection').hidden = false;
-  const box = $('notifyResult');
+function renderNotifyResults(list, box) {
+  box.hidden = false;
   box.textContent = '';
   const wrap = el('div', 'notify-list');
   let okCount = 0;
@@ -2462,40 +2518,65 @@ function renderNotifyResults(list) {
   return okCount;
 }
 
-async function runCheck() {
-  const btn = $('checkBtn');
-  setBusy(btn, true, '检查中…');
-  $('resultSection').hidden = false;
-  $('resultHint').textContent = '干跑：只匹配不推送';
+/**
+ * 测一个任务：真搜一次、真过滤，但**不推送、不写去重表**。
+ *
+ * 停用的任务也能测——调筛选条件通常发生在还没开开关的时候，那时更需要能先看一眼。
+ *
+ * @param {object} task 任务（至少要有 name）。
+ * @param {HTMLButtonElement} btn 触发它的按钮，用来显示进行中文案。
+ */
+async function runTaskTest(task, btn) {
+  const name = task && task.name ? String(task.name) : '';
+  if (!name) {
+    showToast('err', '这个任务没有名字，先保存一遍再测');
+    return;
+  }
+  setBusy(btn, true, '测试中…');
   try {
-    const result = await api('/api/check', { method: 'POST' });
-    if (result && result.ok === false) throw new Error(result.error || '检查失败');
-    renderCheckResults(result.results);
-    showToast('ok', '检查完成（只看不推，不会发送通知）');
+    const result = await api('/api/check', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ task: name }),
+    });
+    if (result && result.ok === false) throw new Error(result.error || '测试失败');
+    const list = Array.isArray(result.results) ? result.results : [];
+    if (list.length === 0) throw new Error('服务端没有返回这个任务的测试结果');
+    taskTests.set(name, list[0]);
+    tasksSignature = null;
+    renderTasks();
+    showToast('ok', '「' + name + '」测试完成：只匹配不推送');
   } catch (error) {
     showError(error);
   } finally {
-    setBusy(btn, false, '立即检查');
+    setBusy(btn, false, '测试');
   }
 }
 
+/** 收起某个任务的测试结果。 */
+function hideTaskTest(name) {
+  taskTests.delete(String(name));
+  tasksSignature = null;
+  renderTasks();
+}
+
+/** 给配置里已有的全部通知渠道各发一条测试消息（入口在「配置 → 通知渠道」）。 */
 async function runTestNotify() {
-  const btn = $('notifyBtn');
+  const btn = $('channelTestAll');
   setBusy(btn, true, '发送中…');
-  $('resultSection').hidden = false;
-  $('resultHint').textContent = '通知渠道测试';
+  const box = $('notifyTestResult');
   try {
     const result = await api('/api/test-notify', { method: 'POST' });
     const list = Array.isArray(result.results) ? result.results : [];
     // 全部渠道失败时服务端也会返回 ok:false，但逐条结果仍然要看得到。
     if (list.length === 0) throw new Error(result.error || '测试通知失败');
-    const okCount = renderNotifyResults(list);
+    const okCount = renderNotifyResults(list, box);
     if (okCount === list.length) showToast('ok', '通知测试全部成功（' + okCount + ' 个渠道）');
     else showToast('err', '通知测试失败：' + okCount + '/' + list.length + ' 个渠道成功，原因见下方结果');
   } catch (error) {
     showError(error);
   } finally {
-    setBusy(btn, false, '测试通知');
+    setBusy(btn, false, '测试全部');
   }
 }
 
@@ -2899,6 +2980,9 @@ function openChannelEditor(index) {
   channelDraft = existing ? JSON.parse(JSON.stringify(existing)) : { type: (channelTypes[0] || {}).type || 'webhook' };
   $('channelTitle').textContent = existing ? '编辑通知渠道' : '添加通知渠道';
   $('channelFormProblems').hidden = true;
+  // 上一次打开时的测试结果不能留给下一条渠道看。
+  $('channelTestResult').hidden = true;
+  $('channelTestResult').textContent = '';
 
   const select = $('channelType');
   select.textContent = '';
@@ -2927,8 +3011,14 @@ function showChannelProblems(box, problems) {
   box.hidden = false;
 }
 
-/** 只测一条渠道；传的是当前草稿，所以没保存也能先试。 */
-async function testChannel(channel, btn) {
+/**
+ * 只测一条渠道；传的是当前草稿，所以没保存也能先试。
+ *
+ * @param {object} channel 渠道配置（可以是界面上还没保存的那份）。
+ * @param {HTMLButtonElement} [btn] 触发它的按钮。
+ * @param {HTMLElement} [box] 结果渲染到哪：渠道卡片的「测试」写在配置页，弹层的「测试这条」写在弹层里。
+ */
+async function testChannel(channel, btn, box = $('notifyTestResult')) {
   if (btn) setBusy(btn, true, '测试中…');
   try {
     const result = await api('/api/test-notify', {
@@ -2938,9 +3028,9 @@ async function testChannel(channel, btn) {
     });
     if (result && result.ok === false && !Array.isArray(result.results)) throw new Error(result.error || '测试失败');
     const list = Array.isArray(result.results) ? result.results : [];
-    const okCount = renderNotifyResults(list);
+    const okCount = renderNotifyResults(list, box);
     if (okCount === list.length && list.length > 0) showToast('ok', '这个渠道发送成功');
-    else showToast('err', '这个渠道发送失败，原因见下方结果');
+    else showToast('err', '这个渠道发送失败，原因见刚出现的那条结果');
   } catch (error) {
     showError(error);
   } finally {
@@ -3716,8 +3806,7 @@ function renderOverview(state) {
 }
 
 function bindEvents() {
-  $('checkBtn').addEventListener('click', runCheck);
-  $('notifyBtn').addEventListener('click', runTestNotify);
+  $('channelTestAll').addEventListener('click', runTestNotify);
   $('loginBtn').addEventListener('click', startLogin);
   $('themeBtn').addEventListener('click', () => applyTheme(currentTheme() === 'light' ? 'dark' : 'light'));
   $('notifySwitch').addEventListener('click', toggleNotifyMaster);
@@ -3806,7 +3895,8 @@ function bindEvents() {
     renderChannelFields();
   });
   $('channelFormTest').addEventListener('click', () => {
-    if (channelDraft) testChannel(channelDraft, $('channelFormTest'));
+    // 弹层里的结果写在弹层自己身上：写进配置页那块会被遮罩挡住。
+    if (channelDraft) testChannel(channelDraft, $('channelFormTest'), $('channelTestResult'));
   });
   $('channelFormSave').addEventListener('click', commitChannel);
   window.addEventListener('hashchange', () => switchRoute(currentRouteFromHash(), { silent: true }));
