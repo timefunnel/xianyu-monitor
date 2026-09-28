@@ -329,3 +329,28 @@ test('QrLoginSession 未 start 就 poll 会明确报错', async () => {
   const session = new QrLoginSession({ logger: silentLogger });
   await assert.rejects(() => session.poll(), /还没调用 start\(\)/);
 });
+
+test('登录成功会在 cookie 文件里盖上 loginAt，用来算这份登录态活了多久', async () => {
+  const store = makeStore();
+  const passport = fakePassport();
+  const startedAt = Date.now();
+  const result = await qrLogin({ store, logger: silentLogger, fetchImpl: passport.fetchImpl, pollIntervalMs: 1 });
+  assert.equal(result.ok, true);
+
+  const saved = JSON.parse(readFileSync(store.file, 'utf8'));
+  assert.equal(typeof saved.loginAt, 'number', 'loginAt 要落盘');
+  assert.ok(saved.loginAt >= startedAt, 'loginAt 应该是这次登录的时间');
+});
+
+test('读取时会带出 loginAt，重新保存不会丢', async () => {
+  const store = makeStore();
+  const passport = fakePassport();
+  await qrLogin({ store, logger: silentLogger, fetchImpl: passport.fetchImpl, pollIntervalMs: 1 });
+  const first = JSON.parse(readFileSync(store.file, 'utf8')).loginAt;
+
+  // 再走一次加载 + 保存（模拟 mtop 回写 Set-Cookie 时的落盘）
+  const jar = await store.load();
+  assert.equal(store.loginAt, first, 'load() 要把 loginAt 读进来');
+  await store.save(jar);
+  assert.equal(JSON.parse(readFileSync(store.file, 'utf8')).loginAt, first, '再保存不能把它弄丢');
+});

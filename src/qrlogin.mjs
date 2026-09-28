@@ -384,6 +384,8 @@ export async function qrLogin({
     logger?.error?.(`登录没拿到 ${missing.join('、')}，保留原有 cookie 文件不动`, 'login');
     return { ok: false, cookies: 0, missing };
   }
+  // 记下这份登录态是什么时候建立的：它失效时日志会打出「存活了多久」。
+  store.loginAt = Date.now();
   await store.save(qr.jar);
   return { ok: true, cookies: qr.jar.size, missing: [] };
 }

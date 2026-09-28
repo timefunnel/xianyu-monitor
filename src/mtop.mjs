@@ -315,6 +315,10 @@ export class MtopSearcher {
         // 会被报成 RGV587 或要求登录，看上去像风控或封号，实际只是 cookie 文件没了。
         const wrapped = new Error(`读不到登录 cookie（${this.cookies.file ?? 'cookie 来源'} 不可读）：${error.message}`);
         wrapped.code = 'auth';
+        // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+        // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
+wrapped.needsRelogin = true;
+wrapped.loginAt = this.cookies.loginAt ?? null;
         throw wrapped;
       }
       if (jar.size === 0) {
@@ -323,6 +327,10 @@ export class MtopSearcher {
             '请先执行 node src/cli.mjs login 扫码登录（二维码会打在终端里）。',
         );
         error.code = 'auth';
+        // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+        // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
+error.needsRelogin = true;
+error.loginAt = this.cookies.loginAt ?? null;
         throw error;
       }
       const t = Date.now().toString();
@@ -360,6 +368,10 @@ export class MtopSearcher {
             '说明服务端已经不认这个会话——请重新扫码登录（node src/cli.mjs login）。',
         );
         error.code = 'auth';
+        // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+        // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
+error.needsRelogin = true;
+error.loginAt = this.cookies.loginAt ?? null;
         throw error;
       }
 
@@ -407,6 +419,10 @@ export class MtopSearcher {
               '登录成功后会自动接上。',
           );
           expired.code = 'auth';
+        // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+        // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
+expired.needsRelogin = true;
+expired.loginAt = this.cookies.loginAt ?? null;
           throw expired;
         }
         const error = new Error(
@@ -419,6 +435,10 @@ export class MtopSearcher {
       if (verdict.kind === 'auth') {
         const error = new Error(`搜索接口要求登录（${verdict.message}）。请重新执行 node src/cli.mjs login 扫码登录。`);
         error.code = 'auth';
+        // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+        // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
+error.needsRelogin = true;
+error.loginAt = this.cookies.loginAt ?? null;
         throw error;
       }
       const error = new Error(`搜索接口返回错误：${verdict.message}`);
@@ -429,6 +449,10 @@ export class MtopSearcher {
     // 循环只有两条出口：成功返回，或抛错。走到这里说明 token 重试也没成。
     const error = new Error('mtop 的 token 握手连续失败，请重新执行 node src/cli.mjs login。');
     error.code = 'auth';
+    // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+    // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
+error.needsRelogin = true;
+error.loginAt = this.cookies.loginAt ?? null;
     throw error;
   }
 

@@ -74,6 +74,8 @@ export class FileCookieStore {
     this.logger = logger;
     /** 被服务端拒绝过的**具体值**（`{name, value}`），见 refuse()。 */
     this.refused = [];
+    /** 这份登录态是何时建立的（登录成功时写入）。用来算「它活了多久」，判断是偶发还是越来越短。 */
+    this.loginAt = null;
     /** 最近一次读到的文件 mtime（毫秒）；文件不存在时为 0。 */
     this.fileMtimeMs = 0;
     /**
@@ -119,6 +121,7 @@ export class FileCookieStore {
     } catch (error) {
       throw new Error(`${this.file} 不是合法的 cookie 文件：${error.message}（删掉它重新扫码登录即可）`);
     }
+    this.loginAt = typeof raw?.loginAt === 'number' ? raw.loginAt : null;
     this.refused = Array.isArray(raw?.refused) ? raw.refused.filter((entry) => entry?.name && entry?.value) : [];
     for (const cookie of raw?.cookies ?? []) {
       if (cookie?.name) jar.set(cookie.name, { ...cookie });
@@ -164,7 +167,7 @@ export class FileCookieStore {
    */
   async save(jar) {
     mkdirSync(path.dirname(this.file), { recursive: true });
-    const payload = { version: 1, savedAt: Date.now(), cookies: [...jar.values()], refused: this.refused };
+    const payload = { version: 1, savedAt: Date.now(), loginAt: this.loginAt ?? null, cookies: [...jar.values()], refused: this.refused };
     const temp = `${this.file}.tmp`;
     writeFileSync(temp, `${JSON.stringify(payload, null, 2)}\n`, { encoding: 'utf8', mode: 0o600 });
     renameSync(temp, this.file);

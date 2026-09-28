@@ -888,3 +888,38 @@ test('抓取因登录失效失败时，状态接口立刻改口：session 变 in
     globalThis.fetch = originalFetch;
   }
 });
+
+test('重新登录成功后会停掉的任务接上（登录态失效时任务循环会主动退出）', async () => {
+  const config = makeConfig();
+  config.monitor.notifyOnStart = false;
+  writeFileSync(path.join(path.dirname(config.storage.stateFile), 'config.json'), JSON.stringify(config), 'utf8');
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(path.dirname(config.storage.stateFile), 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => fakeBrowser([]),
+    qrLogin: async ({ store }) => {
+      await store.save(
+        new Map([
+          ['unb', { name: 'unb', value: '1', domain: '.goofish.com', path: '/' }],
+          ['cookie2', { name: 'cookie2', value: '2', domain: '.goofish.com', path: '/' }],
+        ]),
+      );
+      return { ok: true, cookies: 2, missing: [] };
+    },
+  });
+
+  try {
+    await supervisor.start();
+    // 模拟「登录态失效 → 任务循环主动退出」：循环退出后 controls 里就没有它了
+    supervisor.monitor.stopTask('t');
+    assert.equal(supervisor.monitor.controls.has('t'), false, '先确认它真的停了');
+
+    await supervisor.loginWithQr();
+    await supervisor.loginPromise;
+
+    assert.equal(supervisor.monitor.controls.has('t'), true, '登录成功后必须自动接上，否则界面显示运行中而任务其实停着');
+  } finally {
+    await supervisor.stop();
+  }
+});

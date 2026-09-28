@@ -644,3 +644,45 @@ test('已知缺口：部分渠道失败时该商品仍被标记为已处理，�
   assert.match(partial, /webhook#1/, '同类型多渠道要带下标，否则分不清是哪一个');
   assert.match(partial, /不会再收到它/, '要说清后果，而不是只报个错');
 });
+
+
+test('其它 auth 错误（没带 needsRelogin）仍按退避重试', async () => {
+  // 这条是上面那条的边界：标记是显式加的，不能靠 code === 'auth' 一刀切。
+  const { callTimes } = await runFailing({ code: 'auth', message: '别的认证错误', rounds: 2 });
+  assert.equal(callTimes.length, 2, '没有标记就还是老行为');
+});
+
+test('登录态失效后主循环不再重试（这是「别再拿失效会话打接口」那条修复）', async () => {
+  // 注意 Monitor.run() 是常驻的，只在 stop() 时返回；所以这里用定时器停，
+  // 而不是等它自己结束——否则测的就是"能不能自己退出"，而不是"还会不会重试"。
+  const calls = [];
+  const config = withDefaults({
+    notify: { channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }] },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0, maxBackoffSeconds: 2 },
+    tasks: [{ name: 't', keyword: 'x', intervalSeconds: 1, jitterSeconds: 0, filters: {} }],
+  });
+  const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-auth-')), 'state.json') }).load();
+  const searcher = {
+    async search() {
+      calls.push(Date.now());
+      const error = new Error('登录态已失效');
+      error.code = 'auth';
+      error.needsRelogin = true;
+      error.loginAt = Date.now() - 3 * 3600 * 1000;
+      throw error;
+    },
+    async checkSession() {
+      return 'valid';
+    },
+  };
+  const monitor = new Monitor({ config, store, searcher, logger: createLogger({ level: 'error' }) });
+
+  // 退避是 2 秒：如果没停，这 5 秒里会打好几次；停了就只有第一次。
+  const timer = setTimeout(() => monitor.stop(), 5000);
+  try {
+    await monitor.run();
+  } finally {
+    clearTimeout(timer);
+  }
+  assert.equal(calls.length, 1, `失效后不该再重试，实际打了 ${calls.length} 次`);
+});

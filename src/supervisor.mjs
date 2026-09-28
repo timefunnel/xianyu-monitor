@@ -607,6 +607,8 @@ export class Supervisor {
         this.logger.info(`扫码登录成功，已写入 ${result.cookies} 个 cookie`, 'web');
         // 登录成功就把监控接上：服务生命周期归进程，页面上没有「启动」按钮，
         // 不在这里自动拉起的话，启动时会话失效的用户扫码后会一直停在「没在跑」。
+        // 因登录态失效而停下的任务在这里被接上（那些任务循环已经主动退出了）。
+        this.#resumeStoppedTasks();
         if (!this.running && !this.starting) {
           await this.start().catch((error) => this.logger.warn(`登录后自动启动失败：${error.message}`, 'web'));
         }
@@ -628,6 +630,28 @@ export class Supervisor {
     })();
 
     return { ok: true, active: true };
+  }
+
+  /**
+   * 把「该跑但没在跑」的任务重新拉起。
+   *
+   * 登录态失效时任务循环会主动退出（重试没有意义），所以重新登录成功后必须有人把它接上，
+   * 否则界面会一直显示「运行中」而任务其实停着。
+   *
+   * @returns {string[]} 被重新拉起的任务名。
+   */
+  #resumeStoppedTasks() {
+    const monitor = this.monitor;
+    if (!monitor) return [];
+    const resumed = [];
+    for (const task of this.config.tasks ?? []) {
+      if (task.enabled === false) continue;
+      if (monitor.controls.has(task.name)) continue;
+      monitor.startTask(task);
+      resumed.push(task.name);
+    }
+    if (resumed.length > 0) this.logger.info(`已重新拉起任务：${resumed.join('、')}`, 'web');
+    return resumed;
   }
 
   /**

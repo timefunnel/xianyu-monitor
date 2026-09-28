@@ -18,6 +18,13 @@ const SAFE_REQUESTS_PER_MINUTE = 2;
  * @param {{index?: number, type: string, error?: string}} result 投递结果。
  * @returns {string} 可读描述。
  */
+/** 把毫秒差写成「2 小时 50 分」。 */
+function formatSpan(ms) {
+  const minutes = Math.max(0, Math.round(ms / 60000));
+  const hours = Math.floor(minutes / 60);
+  return hours > 0 ? `${hours} 小时 ${minutes % 60} 分` : `${minutes} 分`;
+}
+
 function describeFailure(result) {
   const where = Number.isInteger(result.index) ? `${result.type}#${result.index}` : result.type;
   return `${where}${result.error ? `（${result.error}）` : ''}`;
@@ -281,6 +288,19 @@ export class Monitor {
         state.failures += 1;
         this.logger.error(`抓取失败（第 ${state.failures} 次）：${error.message}`, task.name);
         this.#emit(this.onFailure, { task, error, failures: state.failures }, '抓取失败');
+
+        // 登录态失效是**唯一**一种重试没有意义的失败：服务端已经不认这个会话，
+        // 继续按退避重试只会拿着失效凭据一遍遍打接口（又是一次次风控压力），
+        // 而它自己永远不会恢复，必须人工扫码。所以这里直接退出任务循环，
+        // 等界面重新登录成功后由 supervisor 重新拉起（见 #resumeStoppedTasks）。
+        if (error.needsRelogin === true) {
+          const lived = typeof error.loginAt === 'number' ? `（这份登录态存活 ${formatSpan(Date.now() - error.loginAt)}）` : '';
+          this.logger.error(
+            `登录态已失效${lived}，已停止重试。在控制台点「重新登录」扫码（或跑 node src/cli.mjs login），登录成功后这个任务会自动接上。`,
+            task.name,
+          );
+          return;
+        }
 
         // 「直接拒绝」要分两种情况，退避时间差两个数量级：
         //  - 刚刚复位了被标记的 cookie（`droppedCookies` 非空）→ 下一轮是一次**不同的**请求，
