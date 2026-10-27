@@ -260,6 +260,7 @@ export class MtopSearcher {
    * @returns {Promise<void>} 回写完成后 resolve（回写失败只告警，不影响本次搜索）。
    */
   async #absorb(response) {
+    /** @type {string[]} 本次被更新的 cookie 名。调用方据此判断平台有没有下发验证凭据。 */
     const changed = [];
     for (const raw of response.headers.getSetCookie?.() ?? []) {
       const name = /^([A-Za-z0-9_]+)=/.exec(raw)?.[1];
@@ -269,12 +270,13 @@ export class MtopSearcher {
       this.fresh.set(cookie.name, cookie);
       changed.push(cookie.name);
     }
-    if (changed.length === 0) return;
+    if (changed.length === 0) return changed;
     try {
       await this.cookies.save(await this.#storedJar());
     } catch (error) {
       this.logger?.warn?.(`cookie 回写失败（登录态可能无法跨重启保持）：${error.message}`);
     }
+    return changed;
   }
 
   /**
@@ -345,7 +347,7 @@ error.loginAt = this.cookies.loginAt ?? null;
         wrapped.code = 'api';
         throw wrapped;
       }
-      await this.#absorb(response);
+      const changedCookies = await this.#absorb(response);
 
       const payload = await response.json().catch(() => null);
       const verdict = classifyResponse(payload);
@@ -418,10 +420,19 @@ error.loginAt = this.cookies.loginAt ?? null;
       }
 
       if (verdict.kind === 'throttle') {
-        // RGV587 有两种成因，而 `ret` 一模一样：真的被挤爆（等一会儿就好），和**登录态已经没了**
-        // （等多久都不会好）。分开它们的成本只有一次最轻的 loginuser.get，收益是别让人对着
-        // 「请调大 intervalSeconds」白等——实测 cookie 过期时，搜索接口回的就是这个 RGV587，
-        // 而同一个 jar 去问 loginuser.get 明确回 SESSION_EXPIRED。
+        // 平台下发 `x5secdata` 就是在说「请完成人机验证（滑块）」。这**不是**登录态问题：
+        // 实测刚扫码登录成功、`unb` 还有 3 天有效期，搜索照样被拦——所以让人去重新登录是错的，
+        // 会陷入「登录成功 → 一搜就被拒 → 又叫你去登录」的死循环。
+        if (changedCookies.includes('x5secdata')) {
+          const error = new Error(
+            `搜索被拦（${verdict.message}），平台还下发了 x5secdata —— 它要求完成人机验证（滑块）。` +
+              '这不是登录态失效，重新扫码不会好：请在带同一账号的普通 Chrome 里过一次验证，' +
+              '或者停手几小时让判定冷却（重试只会加深）。跑 node diagnose-risk.mjs 可确认当前形态。',
+          );
+          error.code = 'risk-control';
+          throw error;
+        }
+        // 没有验证凭据时，才用一次最轻的 loginuser.get 去分辨「真被挤爆」和「登录态没了」。
         const session = await this.checkSession();
         if (session === 'invalid') {
           const expired = new Error(
@@ -430,10 +441,10 @@ error.loginAt = this.cookies.loginAt ?? null;
               '登录成功后会自动接上。',
           );
           expired.code = 'auth';
-        // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
-        // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
-expired.needsRelogin = true;
-expired.loginAt = this.cookies.loginAt ?? null;
+          // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
+          // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
+          expired.needsRelogin = true;
+          expired.loginAt = this.cookies.loginAt ?? null;
           throw expired;
         }
         const error = new Error(

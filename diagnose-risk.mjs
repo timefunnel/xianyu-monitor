@@ -105,12 +105,14 @@ if (store.refused.length > 0) {
 
 // ---------- 会话 ----------
 rule('会话');
-const searcher = createSearcher({ config: resolved, logger });
+// createSearcher 是 async：漏掉 await 拿到的是 Promise，后面 checkSession() 直接 TypeError。
+const searcher = await createSearcher({ config: resolved, logger });
 const session = await searcher.checkSession();
 line(`loginuser.get：${session}`);
 if (session === 'invalid') {
-  line('→ 会话无效。先扫码登录（node src/cli.mjs login）再看，后面几条不用看了。');
-  process.exit(0);
+  line('→ loginuser.get 说会话无效。先别急着重新登录：如果下面的搜索返回码是 RGV587',
+  );
+  line('  且带 x5secdata，那是平台要求人机验证（重新登录不会好）。继续往下看搜索结果。');
 }
 
 // ---------- 旁证接口 ----------

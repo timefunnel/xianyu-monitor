@@ -359,7 +359,15 @@ export class Supervisor {
       const searcher = await this.#makeSearcher();
       this.session = await searcher.checkSession();
       if (this.session === 'invalid') {
-        throw new Error('登录态不可用：没有 cookie 文件，或会话已失效。点「重新登录」扫码即可（在服务器终端里跑 node src/cli.mjs login 也一样）。');
+        const cookieFile = this.config.search?.cookieFile ?? defaultCookieFile(this.config);
+        if (!existsSync(cookieFile)) {
+          throw new Error('登录态不可用：没有登录态文件。点「重新登录」扫码即可（在服务器终端里跑 node src/cli.mjs login 也一样）。');
+        }
+        // 有 cookie 文件却问出 invalid：实测平台把会话标记时 loginuser.get 也会回 SESSION_EXPIRED，
+        // 而搜索那边给的 RGV587 + x5secdata 才是真原因（要人机验证）。
+        // 这里拦下来，界面就只剩一句「登录态不可用」，把人引去反复重新登录。
+        // 所以放它跑：首次搜索会给出具体原因（并且按对应策略退避）。
+        this.logger.warn('会话自检返回 invalid，但登录态文件存在——先不拦，交给首次搜索判定真实原因', 'web');
       }
 
       this.#ensureStore();

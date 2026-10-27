@@ -590,3 +590,22 @@ test('间隔设为 0 时不做任何等待（留给需要急速验证的场合�
   assert.equal(calls.length, 2);
   assert.ok(Date.now() - started < 200, '显式把间隔设成 0 时不应该还有等待');
 });
+
+test('RGV587 且平台下发 x5secdata 时，判定为「要人机验证」而不是登录失效', async () => {
+  // 实测：刚扫码登录成功、unb 还有 3 天有效期，搜索仍被 RGV587 拦下并送来 x5secdata。
+  // 那时候让人去重新登录是错的——会陷入「登录成功 → 一搜就被拒 → 又叫你去登录」的死循环。
+  const { searcher, calls } = makeSearcher([
+    response({ ret: ['RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试!'], data: {} }, ['x5secdata=abc123; Path=/']),
+  ]);
+
+  await assert.rejects(
+    () => searcher.search({ name: 't', keyword: 'x' }),
+    (error) =>
+      error.code === 'risk-control' &&
+      error.needsRelogin !== true &&
+      /人机验证/.test(error.message) &&
+      /重新扫码不会好/.test(error.message),
+    '要验证 ≠ 登录失效',
+  );
+  assert.equal(calls.length, 1, '既然是"要验证"，就不该再多花一次 loginuser.get');
+});
