@@ -325,8 +325,8 @@ export class Monitor {
         const waitMinutes = (cooldownSeconds / 60).toFixed(1);
         const pauseReason =
           error.code === 'risk-control'
-            ? `已暂停 ${waitMinutes} 分钟：风控验证在自动化窗口里过不了，重试只会让风控更严。` +
-              '请先停掉本进程，再用普通 Chrome 打开同一个 profile 完成验证（见 README 的「风控」一节）'
+            ? `已暂停 ${waitMinutes} 分钟：平台要求人机验证（滑块），自动化这边过不了，重试只会让判定更严。` +
+            '要么停手几小时等冷却，要么用普通 Chrome 打开闲鱼、登录同一账号把验证过掉，再回来看是否恢复'
             : error.code === 'denied' && resetCookies > 0
               ? `本轮被风控直接拒绝，已复位 ${resetCookies} 个被标记的 cookie；` +
                 `约 ${Math.round((task.intervalSeconds + Math.random() * task.jitterSeconds) || 0)} 秒后不带它重试`
