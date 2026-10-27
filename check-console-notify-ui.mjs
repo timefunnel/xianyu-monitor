@@ -353,3 +353,41 @@ if (errors.length > 0) {
 }
 console.log(failures.length === 0 ? '\n全部通过。' : `\n失败 ${failures.length} 项：${failures.join('、')}`);
 process.exitCode = failures.length === 0 ? 0 : 1;
+
+// ---- 会话失效时页面要跳登录页，而不是卡在「正在重连」----
+{
+  // 忠实复现：先带着有效会话打开页面，然后把会话弄没（等价于进程重启后内存会话清空），
+  // 页面的下一次轮询会拿到 401——此时必须跳登录页。
+  const { startWebConsole } = await import('./src/server.mjs');
+  const guarded = await startWebConsole({ supervisor, port: 0, host: '127.0.0.1', password: 'harness-password', logger: null });
+  const base = `http://127.0.0.1:${guarded.port}`;
+  // 这段追加在文件末尾，主流程的 browser 已经关了，所以自己起一个。
+  const b2 = await chromium.launch({ channel: 'chrome', headless: true });
+  const context = await b2.newContext({ viewport: { width: 1280, height: 800 } });
+  try {
+    const loginResponse = await fetch(`${base}/login`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/x-www-form-urlencoded' },
+      body: 'password=harness-password',
+      redirect: 'manual',
+    });
+    const cookiePair = (loginResponse.headers.get('set-cookie') ?? '').split(';')[0];
+    const [name, value] = cookiePair.split('=');
+    await context.addCookies([{ name, value, url: base }]);
+
+    const page2 = await context.newPage();
+    await page2.goto(`${base}/`, { waitUntil: 'domcontentloaded' });
+    await page2.waitForTimeout(1200);
+    check(/\/login$/.test(page2.url()) === false, '带有效会话时停在控制台', page2.url());
+
+    // 把会话 cookie 清掉 = 服务端不认这个会话了
+    await context.clearCookies();
+    // 状态轮询 5 秒一次，401 之后应跳登录页
+    await page2.waitForURL(/\/login$/, { timeout: 15000 }).catch(() => {});
+    check(/\/login$/.test(page2.url()), '会话失效后跳转登录页（不是卡在「正在重连」）', page2.url());
+  } finally {
+    await context.close();
+    await b2.close();
+    await guarded.close();
+  }
+}

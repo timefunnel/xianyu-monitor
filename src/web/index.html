@@ -1549,6 +1549,20 @@ function showToast(kind, message, options) {
   return toast;
 }
 
+/**
+ * 会话失效时把页面送去登录页。
+ *
+ * 不这么做的话，界面只会看到「实时连接已断开，正在重连」加一堆 401 提示——
+ * 看起来像服务坏了，其实只是这个浏览器里的会话没了（控制台的会话只在内存里，
+ * 进程一重启就全部失效）。
+ */
+let redirectingToLogin = false;
+function goLogin() {
+  if (redirectingToLogin) return;
+  redirectingToLogin = true;
+  location.href = '/login';
+}
+
 /** 统一展示请求异常，带上服务端给出的 problems（如有）。 */
 function showError(error) {
   const message = error && error.message ? error.message : String(error);
@@ -1594,6 +1608,10 @@ async function api(path, options) {
     }
   }
   if (!response.ok) {
+    if (response.status === 401) {
+      goLogin();
+      throw new Error('会话已失效，正在跳转登录页');
+    }
     const problems = payload && Array.isArray(payload.problems) ? payload.problems : null;
     const detail = problems && problems.length
       ? problems.join('；')
@@ -2778,14 +2796,27 @@ function connectEvents() {
   eventSource.onopen = () => clearReconnectNotice();
 
   eventSource.onerror = () => {
-    showReconnectNotice();
-    // EventSource 自身会重连；只有彻底关闭（例如服务端返回非 2xx）时才手动重建。
-    if (eventSource && eventSource.readyState === EventSource.CLOSED && !esReconnectTimer) {
-      esReconnectTimer = setTimeout(() => {
-        esReconnectTimer = null;
-        connectEvents();
-      }, 5000);
+    // readyState=CLOSED 说明这条流被判死（服务端回 401 就是这样）。这时别盲目重建，
+    // 先问一句 /api/state：是会话失效就跳登录页，否则才重建——否则会对着 401 无限重连。
+    if (eventSource && eventSource.readyState === EventSource.CLOSED) {
+      fetch('/api/state', { cache: 'no-store' })
+        .then((response) => {
+          if (response.status === 401) {
+            goLogin();
+            return;
+          }
+          showReconnectNotice();
+          if (!esReconnectTimer) {
+            esReconnectTimer = setTimeout(() => {
+              esReconnectTimer = null;
+              connectEvents();
+            }, 5000);
+          }
+        })
+        .catch(() => showReconnectNotice());
+      return;
     }
+    showReconnectNotice();
   };
 
   eventSource.onmessage = (event) => {
