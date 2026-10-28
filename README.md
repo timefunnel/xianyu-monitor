@@ -114,6 +114,7 @@ node src/cli.mjs once --task macbook-air-m2 --notify
 | `nativeFilters.sort` | 目前只支持 `"newest"` |
 | `nativeFilters.publishDays` | 只看 1、3、7 或 14 天内发布的商品 |
 | `filters.requireKeywords` | 标题至少包含其中一个关键词 |
+| `filters.requireAllKeywords` | 标题**必须全部**包含这些关键词（要同时满足多个就填这里） |
 | `filters.excludeKeywords` | 标题包含任一关键词时排除 |
 | `filters.requirePattern` / `excludePattern` | 用正则表达式包含或排除 |
 | `filters.excludeSellers` | 按卖家昵称精确排除 |
@@ -121,6 +122,17 @@ node src/cli.mjs once --task macbook-air-m2 --notify
 | `filters.cityContains` / `cityAnyOf` | 对返回结果做本地地区判断 |
 
 价格、地区和发布时间优先使用 `nativeFilters`，这样服务端返回的结果已经经过筛选。`filters` 适合处理闲鱼服务端不支持的条件。
+
+> **关键词匹配的是「标题」，不是正文。** 搜索接口返回的商品对象里只有标题、价格、地区、卖家、图片这些字段，**没有正文/描述**（`exContent` 的键是 `title / price / priceTag / area / userNickName / picUrl / publishTime / detailParams`），所以本地的 `requireKeywords` / `requireAllKeywords` / 正则都只能看标题。
+>
+> 想把正文也算上，只能把词放进 `keyword` 交给服务端搜（服务端的匹配范围比标题大），本地条件放宽：
+>
+> ```jsonc
+> "keyword": "macbook m1 16g",                     // 服务端搜，覆盖正文
+> "filters": { "requireKeywords": ["macbook"] }    // 本地只兜一道
+> ```
+>
+> 代价是：标题里没写、只在正文里提规格的商品，本地 AND 条件会把它排除掉。
 
 搜索结果经常缺少发布时间和信用标签。默认 `monitor.onUnknownField` 为 `pass`，字段缺失时会放行并标注；如果宁可漏报也不接受未知字段，可改为 `reject`。
 
