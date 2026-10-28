@@ -10,7 +10,7 @@
 //
 // 用法：node check-console-notify-ui.mjs
 import { chromium } from 'playwright';
-import { mkdtempSync, writeFileSync } from 'node:fs';
+import { mkdtempSync, readFileSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { startWebConsole } from './src/server.mjs';
@@ -92,7 +92,10 @@ const supervisor = {
   },
   setNotify: async () => ({ ok: true }),
   setTaskEnabled: async () => ({ ok: true }),
-  saveTasks: async () => ({ ok: true }),
+  saveTasks: async (tasks) => {
+    calls.push(['saveTasks', tasks]);
+    return { ok: true };
+  },
   saveConfig: async () => ({ ok: true }),
 };
 
@@ -389,5 +392,49 @@ process.exitCode = failures.length === 0 ? 0 : 1;
     await context.close();
     await b2.close();
     await guarded.close();
+  }
+}
+
+// ---- 「全部必需词」在表单里能回填、保存后进配置 ----
+{
+  // 先把这个字段写进桩的配置文件，验证「配置 → 表单」这个方向
+  const seeded = JSON.parse(readFileSync(configPath, 'utf8'));
+  seeded.tasks[0].filters = { ...(seeded.tasks[0].filters ?? {}), requireAllKeywords: ['AOC', '2K'] };
+  writeFileSync(configPath, JSON.stringify(seeded, null, 2), 'utf8');
+
+  // 这段在文件末尾，主流程的控制台已经关了，所以自己起一个。
+  const { startWebConsole } = await import('./src/server.mjs');
+  const own = await startWebConsole({ supervisor, port: 0, host: '127.0.0.1', logger: null });
+
+  const b3 = await chromium.launch({ channel: 'chrome', headless: true });
+  try {
+    const page3 = await b3.newPage({ viewport: { width: 1280, height: 900 } });
+    await page3.goto('http://127.0.0.1:' + own.port + '/#/tasks', { waitUntil: 'domcontentloaded' });
+    await page3.waitForTimeout(1500);
+    await page3.locator('.cards .card').first().getByRole('button', { name: '编辑' }).click();
+    await page3.waitForTimeout(800);
+    if (!(await page3.locator('#taskAdv').evaluate((el) => el.open))) {
+      await page3.locator('#taskAdv summary').first().click();
+      await page3.waitForTimeout(400);
+    }
+
+    const filled = await page3.locator('#teRequireAllKeywords').inputValue();
+    check(filled === 'AOC, 2K', '配置里的「全部必需词」会回填到表单', filled);
+
+    await page3.locator('#teRequireAllKeywords').fill('AOC, 2K, 27寸');
+    const before = calls.filter((entry) => entry[0] === 'saveTasks').length;
+    await page3.locator('.modal-wide').getByRole('button', { name: /保存/ }).first().click();
+    await page3.waitForTimeout(900);
+
+    const saved = calls.filter((entry) => entry[0] === 'saveTasks').slice(before).at(-1);
+    const task = saved?.[1]?.[0];
+    check(
+      JSON.stringify(task?.filters?.requireAllKeywords) === JSON.stringify(['AOC', '2K', '27寸']),
+      '表单里改的「全部必需词」会进保存的任务对象',
+      JSON.stringify(task?.filters?.requireAllKeywords),
+    );
+  } finally {
+    await b3.close();
+    await own.close();
   }
 }

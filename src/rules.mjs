@@ -17,7 +17,8 @@
  * @typedef {object} Filters 任务过滤条件，字段全部可选。
  * @property {number} [minPrice] 价格下限（含）。
  * @property {number} [maxPrice] 价格上限（含）。
- * @property {string[]} [requireKeywords] 标题必须包含其一。
+ * @property {string[]} [requireKeywords] 标题必须包含其一（任选）。
+ * @property {string[]} [requireAllKeywords] 标题必须**全部**包含（同时满足多个关键词）。
  * @property {string[]} [excludeKeywords] 标题包含任一即排除。
  * @property {string} [requirePattern] 标题必须匹配的正则（不区分大小写）。用于「144Hz 以上」这类
  *   需要边界的条件——用 requireKeywords 写 "144" 会被 "1440P" 误命中。
@@ -94,6 +95,14 @@ export function evaluate(item, filters = {}, options = {}) {
   const required = (filters.requireKeywords ?? []).filter(Boolean);
   if (required.length > 0 && !required.some((keyword) => lowerTitle.includes(keyword.toLowerCase()))) {
     rejections.push(`标题未包含必需词 ${required.join(' / ')}`);
+  }
+
+  // 「同时满足多个关键词」：每一个都必须出现。和上面那个「任选」是两件事，所以字段分开。
+  // 拒绝时点名**缺了哪几个**——只说「不满足」等于让人自己去逐个比对。
+  const requiredAll = (filters.requireAllKeywords ?? []).filter(Boolean);
+  if (requiredAll.length > 0) {
+    const missing = requiredAll.filter((keyword) => !lowerTitle.includes(keyword.toLowerCase()));
+    if (missing.length > 0) rejections.push(`标题缺少必需词 ${missing.join(' / ')}（要求全部出现）`);
   }
 
   if (requirePattern && !requirePattern.test(title)) {
@@ -183,6 +192,7 @@ export function describeFilters(filters = {}, nativeFilters, options = {}) {
     parts.push(`价格 ${filters.minPrice ?? '-'}~${filters.maxPrice ?? '-'}`);
   }
   list('必需词', filters.requireKeywords);
+  list('全部必需词', filters.requireAllKeywords);
   list('排除词', filters.excludeKeywords);
   if (filters.requirePattern) parts.push(`匹配 /${filters.requirePattern}/`);
   if (filters.excludePattern) parts.push(`不匹配 /${filters.excludePattern}/`);

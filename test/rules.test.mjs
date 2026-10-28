@@ -155,3 +155,47 @@ test('原生筛选与控制台摘要一起出现', () => {
   const summary = describeFilters({ maxAgeMinutes: 120 }, { priceRange: [500, 700], region: '江浙沪' });
   assert.equal(summary, '原生价格筛选 500~700，原生区域筛选 江浙沪，120 分钟内');
 });
+
+// ---------- 「同时满足多个关键词」（requireAllKeywords） ----------
+
+test('全部必需词都出现时通过；缺一个就排除，并点名缺了哪个', () => {
+  const filters = { requireAllKeywords: ['AOC', '27寸', '2K'] };
+  const title = 'AOC 27寸 2K 180Hz 显示器';
+
+  assert.equal(evaluate(item({ title }), filters, { now: NOW }).ok, true);
+
+  const missing = evaluate(item({ title: 'AOC 27寸 180Hz 显示器' }), filters, { now: NOW });
+  assert.equal(missing.ok, false);
+  // 拒绝原因要指出**缺的是哪一个**，只说「不满足」等于让人自己逐个比对
+  assert.match(missing.rejections.join('；'), /缺少必需词 2K/);
+  assert.match(missing.rejections.join('；'), /要求全部出现/);
+});
+
+test('requireKeywords（任选）与 requireAllKeywords（全部）可以同时用，各自生效', () => {
+  const filters = {
+    requireKeywords: ['AOC', '小米'], // 任选其一
+    requireAllKeywords: ['27寸', '2K'], // 两个都要
+  };
+  const pass = '小米 27寸 2K 显示器';
+  const wrongBrand = '飞利浦 27寸 2K 显示器';
+  const missingOne = 'AOC 27寸 显示器';
+
+  assert.equal(evaluate(item({ title: pass }), filters, { now: NOW }).ok, true);
+  assert.equal(evaluate(item({ title: wrongBrand }), filters, { now: NOW }).ok, false);
+  const verdict = evaluate(item({ title: missingOne }), filters, { now: NOW });
+  assert.equal(verdict.ok, false);
+  assert.match(verdict.rejections.join('；'), /缺少必需词 2K/);
+});
+
+test('大小写不敏感；空数组或没配时不影响判定', () => {
+  assert.equal(evaluate(item({ title: 'aoc 27寸' }), { requireAllKeywords: ['AOC', '27寸'] }, { now: NOW }).ok, true);
+  assert.equal(evaluate(item({ title: '随便什么' }), { requireAllKeywords: [] }, { now: NOW }).ok, true);
+  assert.equal(evaluate(item({ title: '随便什么' }), {}, { now: NOW }).ok, true);
+});
+
+test('describeFilters 里能看出「全部必需词」，不会被当成任选那一项', () => {
+  // verbose 模式才会列取值（默认只报条数），分隔符是中文逗号。
+  const summary = describeFilters({ requireKeywords: ['AOC'], requireAllKeywords: ['27寸', '2K'] }, undefined, { verbose: true });
+  assert.match(summary, /必需词 AOC/);
+  assert.match(summary, /全部必需词 27寸\|2K/);
+});

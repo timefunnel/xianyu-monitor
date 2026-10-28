@@ -79,7 +79,7 @@ export function validateConfig(config) {
       if (typeof filters.minPrice === 'number' && typeof filters.maxPrice === 'number' && filters.minPrice > filters.maxPrice) {
         problems.push(`${where}.filters.minPrice 不能大于 maxPrice`);
       }
-      for (const key of ['requireKeywords', 'excludeKeywords', 'excludeSellers', 'cityAnyOf']) {
+      for (const key of ['requireKeywords', 'requireAllKeywords', 'excludeKeywords', 'excludeSellers', 'cityAnyOf']) {
         if (key in filters && !Array.isArray(filters[key])) {
           problems.push(`${where}.filters.${key} 必须是字符串数组`);
         }

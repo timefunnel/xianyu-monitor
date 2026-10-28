@@ -1344,6 +1344,13 @@
           </div>
 
           <div class="field wide">
+            <label class="field-label" for="teRequireAllKeywords">必须全部包含的关键词</label>
+            <input class="input" id="teRequireAllKeywords" type="text" autocomplete="off" placeholder="AOC, 27寸, 2K">
+            <div class="hint">要「同时满足」的几个词填这里，用英文逗号分隔；上面那个是「任选其一」。两边可以同时用</div>
+            <div class="field-error" data-err="requireAllKeywords" hidden></div>
+          </div>
+
+          <div class="field wide">
             <label class="field-label" for="teExcludeKeywords">必须排除的关键词</label>
             <input class="input" id="teExcludeKeywords" type="text" autocomplete="off" placeholder="同款, 求购, 展示机">
             <div class="hint">用英文逗号分隔；标题里出现任意一个就丢弃</div>
@@ -2196,6 +2203,7 @@ function createFilterChips(task) {
     push('价格 ' + low + '~' + high, '价格区间：' + low + '~' + high + ' 元');
   }
   listChip('品牌白名单', filters.requireKeywords);
+  listChip('全部必需词', filters.requireAllKeywords);
   listChip('排除词', filters.excludeKeywords);
   if (typeof filters.requirePattern === 'string' && filters.requirePattern !== '') {
     push('必须匹配正则', '必须匹配正则：/' + filters.requirePattern + '/');
@@ -3194,6 +3202,7 @@ const TASK_FIELD_INPUTS = {
   publishDays: ['tePublishDays'],
   sellerCredit: ['teSellerCredit'],
   requireKeywords: ['teRequireKeywords'],
+  requireAllKeywords: ['teRequireAllKeywords'],
   excludeKeywords: ['teExcludeKeywords'],
   requirePattern: ['teRequirePattern'],
   excludePattern: ['teExcludePattern'],
@@ -3204,13 +3213,13 @@ const TASK_FIELD_INPUTS = {
 };
 
 /** 折叠区里的字段：报错时自动展开，不然用户看不到红框。 */
-const ADVANCED_FIELDS = ['requireKeywords', 'excludeKeywords', 'requirePattern', 'excludePattern', 'excludeSellers', 'maxAgeMinutes', 'cityContains', 'scrollRounds', 'sort', 'publishDays', 'sellerCredit'];
+const ADVANCED_FIELDS = ['requireKeywords', 'requireAllKeywords', 'excludeKeywords', 'requirePattern', 'excludePattern', 'excludeSellers', 'maxAgeMinutes', 'cityContains', 'scrollRounds', 'sort', 'publishDays', 'sellerCredit'];
 
 /**
  * 表单直接管理的子键：覆盖时只动这些，其余子键（手写的扩展字段）原样保留。
  * 顶层键见 buildTaskObject：它以原任务对象为基础赋值。
  */
-const MANAGED_FILTER_KEYS = ['requireKeywords', 'excludeKeywords', 'requirePattern', 'excludePattern', 'excludeSellers', 'maxAgeMinutes', 'cityContains', 'requireSellerCredit'];
+const MANAGED_FILTER_KEYS = ['requireKeywords', 'requireAllKeywords', 'excludeKeywords', 'requirePattern', 'excludePattern', 'excludeSellers', 'maxAgeMinutes', 'cityContains', 'requireSellerCredit'];
 const MANAGED_NATIVE_KEYS = ['priceRange', 'region', 'sort', 'publishDays'];
 
 /** 新建任务时的默认值。 */
@@ -3292,6 +3301,7 @@ function readTaskForm() {
     publishDays: numberOrNull($('tePublishDays').value),
     sellerCredit: $('teSellerCredit').value,
     requireKeywords: splitKeywordList($('teRequireKeywords').value),
+    requireAllKeywords: splitKeywordList($('teRequireAllKeywords').value),
     excludeKeywords: splitKeywordList($('teExcludeKeywords').value),
     requirePattern: $('teRequirePattern').value.trim(),
     excludePattern: $('teExcludePattern').value.trim(),
@@ -3400,6 +3410,7 @@ function buildTaskObject(values, original) {
   const filters = Object.assign({}, isPlainObject(source.filters) ? source.filters : {});
   for (const key of MANAGED_FILTER_KEYS) delete filters[key];
   if (values.requireKeywords.length > 0) filters.requireKeywords = values.requireKeywords;
+  if (values.requireAllKeywords.length > 0) filters.requireAllKeywords = values.requireAllKeywords;
   if (values.excludeKeywords.length > 0) filters.excludeKeywords = values.excludeKeywords;
   if (values.requirePattern) filters.requirePattern = values.requirePattern;
   if (values.excludePattern) filters.excludePattern = values.excludePattern;
@@ -3433,6 +3444,7 @@ function fillTaskForm(task) {
   $('tePublishDays').value = native.publishDays ? String(native.publishDays) : '';
   $('teSellerCredit').value = filters.requireSellerCredit ?? '';
   $('teRequireKeywords').value = listToInput(filters.requireKeywords);
+  $('teRequireAllKeywords').value = listToInput(filters.requireAllKeywords);
   $('teExcludeKeywords').value = listToInput(filters.excludeKeywords);
   $('teRequirePattern').value = toInputValue(filters.requirePattern);
   $('teExcludePattern').value = toInputValue(filters.excludePattern);
