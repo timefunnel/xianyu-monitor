@@ -686,3 +686,51 @@ test('登录态失效后主循环不再重试（这是「别再拿失效会话�
   }
   assert.equal(calls.length, 1, `失效后不该再重试，实际打了 ${calls.length} 次`);
 });
+
+test('运行中打开任务推送后，下一轮立刻推送（不必重启任务）', async () => {
+  // 回归：任务级 notify 是运行期可切换的开关，但任务循环开头只解构了一次任务对象，
+  // 界面切换更新的是 control.task，循环看不到——表现就是「我明明开了，日志还写静默」。
+  const sent = [];
+  const originalFetch = globalThis.fetch;
+  globalThis.fetch = async (url, init) => {
+    sent.push(init?.body ? JSON.parse(init.body) : {});
+    return { ok: true, status: 200, text: async () => '' };
+  };
+
+  const config = withDefaults({
+    notify: { channels: [{ type: 'webhook', url: 'https://notify.invalid/hook' }] },
+    monitor: { notifyOnStart: false, minRequestGapSeconds: 0, maxBackoffSeconds: 5 },
+    tasks: [{ name: 't', keyword: 'x', intervalSeconds: 1, jitterSeconds: 0, filters: {}, notify: false }],
+  });
+  const store = new SeenStore({ file: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-notify-')), 'state.json') }).load();
+  let round = 0;
+  const searcher = {
+    async search() {
+      round += 1;
+      // 每轮都要给**新 id**：同一个 id 在静默那轮就进了去重表，后面会被当成旧货挡掉。
+      const items = [item({ id: 'push-' + round })];
+      return { items, source: 'api', raw: [], requests: 1 };
+    },
+    async checkSession() {
+      return 'valid';
+    },
+  };
+  const monitor = new Monitor({ config, store, searcher, logger: createLogger({ level: 'error' }) });
+
+  const running = monitor.run();
+  try {
+    await new Promise((resolve) => setTimeout(resolve, 1300));
+    assert.equal(sent.length, 0, '第一轮开关关着，不该推送');
+
+    // 模拟 supervisor #applyTaskDiff：换掉 control 里那份任务对象
+    const control = monitor.controls.get('t');
+    control.task = { ...control.task, notify: true };
+
+    await new Promise((resolve) => setTimeout(resolve, 2600));
+    assert.ok(sent.length >= 1, `开关打开后应该推送，实际发出 ${sent.length} 条`);
+  } finally {
+    monitor.stop();
+    await running;
+    globalThis.fetch = originalFetch;
+  }
+});

@@ -489,7 +489,12 @@ export class Monitor {
    */
   #shouldPush(task) {
     if (this.config.notify.enabled === false) return false;
-    return task.notify !== false;
+    // 读 control 里的**当前**任务对象，而不是调用方传进来的那个：
+    // 任务循环开头只解构了一次 `const { task } = control`，界面切换开关时 supervisor
+    // 更新的是 `control.task`，循环手里的旧对象看不到——实测 07:05 打开推送后，
+    // 之后每轮日志仍然打「推送已静默」，直到任务重启才生效。
+    const live = this.controls.get(task.name)?.task ?? task;
+    return live.notify !== false;
   }
 
   /**
