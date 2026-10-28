@@ -1346,7 +1346,7 @@
           <div class="field wide">
             <label class="field-label" for="teRequireAllKeywords">必须全部包含的关键词</label>
             <input class="input" id="teRequireAllKeywords" type="text" autocomplete="off" placeholder="AOC, 27寸, 2K">
-            <div class="hint">要「同时满足」的几个词填这里，用英文逗号分隔；上面那个是「任选其一」。两边可以同时用</div>
+            <div class="hint">要「同时满足」的几个词填这里，用英文逗号分隔；<b>都出现在标题里</b>才推送（接口不返回正文，没法匹配描述）。上面那个是「任选其一」，两边可以同时用</div>
             <div class="field-error" data-err="requireAllKeywords" hidden></div>
           </div>
 
