@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { FileCookieStore, defaultCookieFile, parseSetCookie, staleLoginCookie } from '../src/cookies.mjs';
+import { FileCookieStore, defaultCookieFile, parseCookieImport, parseSetCookie, staleLoginCookie } from '../src/cookies.mjs';
 
 const tempFile = () => path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-cookie-')), 'cookies.json');
 
@@ -118,3 +118,38 @@ test('staleLoginCookie 只把确实过期的 unb 判死，会话级 cookie 不�
 });
 
 
+
+test('粘贴 cookies.json 全文：解析出 cookie，并把别站的丢掉', () => {
+  const jar = parseCookieImport(
+    JSON.stringify({
+      version: 1,
+      cookies: [
+        { name: 'unb', value: 'u1', domain: '.goofish.com', expires: 1893456000 },
+        { name: 'cookie2', value: 'c1', domain: '.taobao.com' },
+        { name: 'SID', value: 'google', domain: '.google.com' },
+        { name: '', value: '无名', domain: '.goofish.com' },
+        { name: 'empty', value: '', domain: '.goofish.com' },
+      ],
+    }),
+  );
+  assert.equal(jar.size, 2, '只留闲鱼/淘宝域、且 name/value 都不为空的');
+  assert.equal(jar.get('unb').value, 'u1');
+  assert.equal(jar.get('unb').secure, true, '缺省按 secure 处理');
+  assert.equal(jar.get('cookie2').domain, '.taobao.com');
+});
+
+test('粘贴 Cookie 请求头也能用', () => {
+  const jar = parseCookieImport('unb=u2; cookie2=c2; _tb_token_=abc==');
+  assert.equal(jar.get('unb').value, 'u2');
+  assert.equal(jar.get('cookie2').value, 'c2');
+  assert.equal(jar.get('_tb_token_').value, 'abc==', '值里带 = 不能截断');
+  assert.equal(jar.get('unb').domain, '.goofish.com', '没有域时默认本站');
+});
+
+test('内容不完整时明确说缺什么，而不是写一份半残的登录态', () => {
+  assert.throws(() => parseCookieImport('unb=u3'), /cookie2/);
+  assert.throws(() => parseCookieImport('cookie2=c3'), /unb/);
+  assert.throws(() => parseCookieImport(''), /没有内容/);
+  assert.throws(() => parseCookieImport('{"version":1}'), /没有 cookies 数组/);
+  assert.throws(() => parseCookieImport('{坏掉的 json'), /合法的 cookies.json/);
+});

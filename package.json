@@ -1,6 +1,6 @@
 {
   "name": "xianyu-monitor",
-  "version": "0.1.12",
+  "version": "0.1.13",
   "private": true,
   "description": "闲鱼关键词监控：命中规则后秒级推送到 Telegram / 钉钉 / 企业微信 / Bark / Server酱 / 自定义 webhook",
   "license": "MIT",

@@ -923,3 +923,90 @@ test('重新登录成功后会停掉的任务接上（登录态失效时任务�
     await supervisor.stop();
   }
 });
+
+test('导入登录态：先校验再落盘，并把停掉的任务接上', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-import-'));
+  const cookieFile = path.join(dir, 'cookies.json');
+  const config = makeConfig({ search: { cookieFile } });
+  const calls = [];
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(dir, 'config.json'),
+    logger: silentLogger,
+    // 校验用的是"还没落盘"的那份：临时文件 + 注入的搜索器，绝不能真发请求。
+    createSearcher: async () => ({ checkSession: async () => 'valid' }),
+  });
+  supervisor.monitor = fakeMonitor(calls);
+  supervisor.running = true;
+
+  const result = await supervisor.importCookies('unb=u-import; cookie2=c-import');
+
+  assert.equal(result.ok, true);
+  assert.equal(result.count, 2);
+  const saved = JSON.parse(readFileSync(cookieFile, 'utf8'));
+  assert.equal(saved.cookies.find((cookie) => cookie.name === 'unb').value, 'u-import');
+  assert.ok(saved.loginAt > 0, '登录时间要记下来，界面靠它显示"存活了多久"');
+  assert.deepEqual(calls, [['start', 't']], '登录态好了就该把因失效停掉的任务接上');
+  assert.equal(supervisor.snapshot().session, 'valid');
+});
+
+test('导入登录态：服务端不认时，一个字都不写', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-import-bad-'));
+  const cookieFile = path.join(dir, 'cookies.json');
+  const config = makeConfig({ search: { cookieFile } });
+  writeFileSync(cookieFile, JSON.stringify({ version: 1, cookies: [{ name: 'unb', value: 'good' }] }), 'utf8');
+  const before = readFileSync(cookieFile, 'utf8');
+
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(dir, 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => ({ checkSession: async () => 'invalid' }),
+  });
+
+  const result = await supervisor.importCookies('unb=bad; cookie2=bad');
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /服务端不认/);
+  assert.equal(readFileSync(cookieFile, 'utf8'), before, '校验没过就不能覆盖原来那份');
+});
+
+test('导入登录态：内容不完整时直接说缺什么，连校验请求都不发', async () => {
+  let asked = 0;
+  const supervisor = new Supervisor({
+    config: makeConfig(),
+    configPath: path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-import-part-')), 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => {
+      asked += 1;
+      return { checkSession: async () => 'valid' };
+    },
+  });
+
+  const result = await supervisor.importCookies('unb=only');
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /cookie2/);
+  assert.equal(asked, 0);
+});
+
+test('导入登录态：校验结论不明（网络问题）时不动原有登录态', async () => {
+  const dir = mkdtempSync(path.join(tmpdir(), 'xianyu-import-unknown-'));
+  const cookieFile = path.join(dir, 'cookies.json');
+  const config = makeConfig({ search: { cookieFile } });
+  writeFileSync(cookieFile, JSON.stringify({ version: 1, cookies: [{ name: 'unb', value: 'good' }] }), 'utf8');
+  const before = readFileSync(cookieFile, 'utf8');
+
+  const supervisor = new Supervisor({
+    config,
+    configPath: path.join(dir, 'config.json'),
+    logger: silentLogger,
+    createSearcher: async () => ({ checkSession: async () => 'unknown' }),
+  });
+
+  const result = await supervisor.importCookies('unb=u; cookie2=c');
+
+  assert.equal(result.ok, false);
+  assert.match(result.error, /没能确认/);
+  assert.equal(readFileSync(cookieFile, 'utf8'), before);
+});

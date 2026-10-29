@@ -222,3 +222,83 @@ export function staleLoginCookie(jar, now = Date.now()) {
   }
   return null;
 }
+
+/** 登录态只可能来自这几个域。粘贴整段浏览器 cookie 时，别的站点会被丢掉。 */
+const LOGIN_DOMAINS = ['goofish.com', 'taobao.com', 'tmall.com', 'alipay.com'];
+
+/** 这个 domain 是不是登录态可能用到的域（空前缀按本站处理）。 */
+function isLoginDomain(domain) {
+  const normalized = String(domain ?? '')
+    .replace(/^\./, '')
+    .toLowerCase();
+  if (normalized === '') return true;
+  return LOGIN_DOMAINS.some((suffix) => normalized === suffix || normalized.endsWith(`.${suffix}`));
+}
+
+/**
+ * 解析用户粘贴的登录态。接受两种格式：
+ *
+ *   1. `data/cookies.json` 的全文（`{"cookies":[...]}`，或直接就是一个数组）；
+ *   2. 浏览器里复制的 Cookie 请求头（`a=b; c=d`）。
+ *
+ * 为什么需要它：服务器上没有图形界面，扫码要求手机 App 处在目标账号；而手机号验证码登录
+ * 又必须在真实浏览器里过滑块（见 browserlogin.mjs）。允许把别处登录好的登录态粘进来，
+ * 就不必为了换账号去动手机。
+ *
+ * 校验只做本地能做的（条数、必备项、域名），服务端是否认账交给调用方发一次 loginuser.get：
+ * 本地永远判断不了"这份 cookie 是不是已经被平台作废"。
+ *
+ * @param {string} text 粘贴的内容。
+ * @returns {Map<string, any>} cookie 名到 cookie 对象。
+ */
+export function parseCookieImport(text) {
+  const raw = String(text ?? '').trim();
+  if (raw === '') throw new Error('没有内容：请粘贴 cookies.json 全文，或 `a=b; c=d` 形式的 Cookie 请求头');
+
+  let list;
+  if (raw.startsWith('{') || raw.startsWith('[')) {
+    let parsed;
+    try {
+      parsed = JSON.parse(raw);
+    } catch (error) {
+      throw new Error(`不是合法的 cookies.json：${error.message}`);
+    }
+    list = Array.isArray(parsed) ? parsed : Array.isArray(parsed?.cookies) ? parsed.cookies : null;
+    if (!list) throw new Error('这个 JSON 里没有 cookies 数组，也不是 cookie 数组');
+  } else {
+    list = [];
+    for (const part of raw.split(';')) {
+      const index = part.indexOf('=');
+      if (index <= 0) continue;
+      list.push({ name: part.slice(0, index).trim(), value: part.slice(index + 1).trim() });
+    }
+  }
+
+  const jar = new Map();
+  for (const entry of list) {
+    const name = typeof entry?.name === 'string' ? entry.name.trim() : '';
+    const value = typeof entry?.value === 'string' ? entry.value : '';
+    if (name === '' || value === '') continue;
+    const domain = typeof entry.domain === 'string' && entry.domain !== '' ? entry.domain : '.goofish.com';
+    // 整段导出里常混着别的站点，发到闲鱼头上既没用也等于泄露，直接丢掉。
+    if (!isLoginDomain(domain)) continue;
+    const expires = Number(entry.expires);
+    jar.set(name, {
+      name,
+      value,
+      domain,
+      path: typeof entry.path === 'string' && entry.path !== '' ? entry.path : '/',
+      expires: Number.isFinite(expires) ? expires : -1,
+      secure: entry.secure ?? true,
+      httpOnly: entry.httpOnly ?? false,
+      sameSite: entry.sameSite ?? 'Lax',
+    });
+  }
+
+  if (jar.size === 0) throw new Error('没有解析出任何本站 cookie（闲鱼/淘宝域）');
+  const missing = ['cookie2', 'unb'].filter((name) => !jar.has(name));
+  if (missing.length > 0) {
+    throw new Error(`缺少 ${missing.join('、')}：这份内容不完整，多半是没登录成功时导出的`);
+  }
+  return jar;
+}

@@ -699,7 +699,39 @@
   /* 二维码还没生成好时显示它——给 <img> 空着 src 会变成「图裂」，比没图还难看。 */
   .qr-placeholder { padding: 0 18px; font-size: 13px; color: var(--muted); text-align: center; line-height: 1.7; }
   .qr-hint { font-size: 12.5px; color: var(--muted); line-height: 1.7; }
-  .modal-actions { margin-top: 14px; display: flex; justify-content: center; }
+  .modal-actions { margin-top: 14px; display: flex; justify-content: center; gap: 8px; }
+  /* 扫码之外的第二条路：在别处登录好，把登录态粘进来（服务器上没有图形界面时尤其有用） */
+  .login-divider {
+    display: flex;
+    align-items: center;
+    gap: 10px;
+    margin: 16px 0 10px;
+    font-size: 12px;
+    color: var(--muted);
+    white-space: nowrap;
+  }
+  .login-divider::before,
+  .login-divider::after {
+    content: '';
+    flex: 1;
+    height: 1px;
+    background: var(--border);
+  }
+  .cookie-input {
+    width: 100%;
+    box-sizing: border-box;
+    min-height: 62px;
+    padding: 8px 10px;
+    resize: vertical;
+    font: 12px/1.5 ui-monospace, SFMono-Regular, Menlo, Consolas, monospace;
+    color: var(--text);
+    background: transparent;
+    border: 1px solid var(--border-strong);
+    border-radius: 8px;
+  }
+  .cookie-input:focus { outline: 2px solid var(--accent-bd); outline-offset: 1px; }
+  .cookie-note { margin: 6px 0 10px; font-size: 12px; color: var(--muted); line-height: 1.6; }
+  .cookie-note code { font-size: 11.5px; }
 
   /* ---------- 任务卡片：状态徽章与操作按钮 ---------- */
   .action-row { display: flex; gap: 6px; }
@@ -1131,7 +1163,7 @@
 <!-- 扫码登录弹层 -->
 <div class="mask" id="loginMask" hidden>
   <div class="modal">
-    <h3>扫码登录闲鱼</h3>
+    <h3>重新登录闲鱼</h3>
     <div class="qr-box">
       <img id="qrImg" alt="闲鱼登录二维码" hidden>
       <span class="qr-placeholder" id="qrPlaceholder">正在生成二维码…</span>
@@ -1141,7 +1173,15 @@
       <span id="qrNote">扫码后在手机上点击「确认登录」</span><br>
       <span id="loginFlow"></span>
     </div>
+    <div class="login-divider">或者，粘贴别处登录好的登录态</div>
+    <textarea id="cookieInput" class="cookie-input" rows="3" spellcheck="false" autocomplete="off"
+      placeholder="整段粘贴 data/cookies.json，或 unb=…; cookie2=…"></textarea>
+    <div class="cookie-note">
+      在任意一台能登录的机器上跑 <code>npm run login:browser</code>，把生成的 <code>data/cookies.json</code>
+      整段粘进来。服务端会先用 <code>loginuser.get</code> 校验，通过才落盘。
+    </div>
     <div class="modal-actions">
+      <button class="btn" type="button" id="importCookiesBtn"><span>导入这份登录态</span></button>
       <button class="btn" type="button" id="loginClose">关闭</button>
     </div>
   </div>
@@ -2715,6 +2755,37 @@ async function startLogin() {
   }
 }
 
+/**
+ * 导入登录态：把别处登录好的 cookies 粘进来。
+ *
+ * 服务端会先发一次 `loginuser.get` 校验再落盘——粘贴这种东西最容易「看着填完了，
+ * 其实是别处的旧 cookie」，盲写会把手上还能用的那份冲掉。
+ */
+async function importCookies() {
+  const btn = $('importCookiesBtn');
+  const text = $('cookieInput').value.trim();
+  if (text === '') {
+    showToast('warn', '先粘贴 cookies.json 的内容，或 a=b; c=d 形式的请求头');
+    return;
+  }
+  setBusy(btn, true, '校验中…');
+  try {
+    const result = await api('/api/login-import', {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cookies: text }),
+    });
+    if (!result || result.ok === false) throw new Error((result && result.error) || '导入失败');
+    $('cookieInput').value = '';
+    showToast('success', `登录态已导入（${result.count} 个 cookie）`);
+    closeLoginModal();
+  } catch (error) {
+    showError(error);
+  } finally {
+    setBusy(btn, false, '导入这份登录态');
+  }
+}
+
 /* ==========================================================================
    实时日志面板（SSE）
    ========================================================================== */
@@ -3877,6 +3948,7 @@ function bindEvents() {
 
   // 登录弹层
   $('loginClose').addEventListener('click', closeLoginModal);
+  $('importCookiesBtn').addEventListener('click', importCookies);
   $('loginMask').addEventListener('click', (event) => {
     if (event.target === $('loginMask')) closeLoginModal();
   });

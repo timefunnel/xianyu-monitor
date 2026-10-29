@@ -201,6 +201,14 @@ export async function startWebConsole({
     'POST /api/login': () => supervisor.loginWithQr(),
     // 关掉登录弹层时调它：中止后台轮询，而不是让它干等到超时。
     'POST /api/login-cancel': () => supervisor.cancelLogin(),
+    // 导入别处登录好的登录态。服务器上没有图形界面，遇到短信登录过不了滑块时这是唯一不碰手机的路。
+    'POST /api/login-import': async (request) => {
+      const { cookies } = await readJsonBody(request);
+      if (typeof cookies !== 'string' || cookies.trim() === '') {
+        return { status: 400, body: { ok: false, error: 'cookies 必填：粘贴 cookies.json 全文，或 a=b; c=d 形式的请求头' } };
+      }
+      return { body: await supervisor.importCookies(cookies) };
+    },
   };
 
   /** 渲染登录页。`error` 为空时不显示错误块。 */

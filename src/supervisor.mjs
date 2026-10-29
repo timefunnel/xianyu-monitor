@@ -6,11 +6,12 @@
  * 一个失败的启动不该把 HTTP 服务器带崩。
  */
 
-import { existsSync, mkdirSync, readFileSync, renameSync, writeFileSync } from 'node:fs';
+import { existsSync, mkdirSync, readFileSync, renameSync, unlinkSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
 import path from 'node:path';
 import { writeFileAtomic } from './fileio.mjs';
 import { withDefaults } from './config.mjs';
-import { FileCookieStore, defaultCookieFile } from './cookies.mjs';
+import { FileCookieStore, defaultCookieFile, parseCookieImport } from './cookies.mjs';
 import { qrLogin } from './qrlogin.mjs';
 import { describeFilters, evaluate } from './rules.mjs';
 import { SeenStore } from './store.mjs';
@@ -674,6 +675,89 @@ export class Supervisor {
     if (!this.login.active || !this.loginAbort) return { ok: true, cancelled: false };
     this.loginAbort.abort();
     return { ok: true, cancelled: true };
+  }
+
+  /**
+   * 导入一份**从别处登录好的**登录态（界面粘贴 cookies.json 全文，或 `a=b; c=d` 形式的请求头）。
+   *
+   * 为什么要有它：服务器上没有图形界面，扫码又要求手机 App 处在目标账号；而手机号验证码登录
+   * 必须在真实浏览器里过滑块（见 browserlogin.mjs）。允许把别处登录好的登录态粘进来，
+   * 就不必为了换账号去动手机。
+   *
+   * 落盘前先问一次 loginuser.get：本地判断不了「这份 cookie 是不是已经被平台作废」，
+   * 而一次无效的导入会把原来还能用的登录态冲掉。
+   *
+   * @param {string} text 粘贴的内容。
+   * @returns {Promise<{ok: boolean, count?: number, error?: string}>} 结果。
+   */
+  async importCookies(text) {
+    let jar;
+    try {
+      jar = parseCookieImport(text);
+    } catch (error) {
+      return { ok: false, error: error.message };
+    }
+
+    // 扫码和导入写的是同一个文件：先停掉扫码，别让它在几秒后把刚导入的覆盖回去。
+    if (this.login.active) this.cancelLogin();
+
+    const file = this.config.search?.cookieFile ?? defaultCookieFile(this.config);
+    const verdict = await this.#probeJar(jar);
+    if (verdict !== 'valid') {
+      return {
+        ok: false,
+        error:
+          verdict === 'unknown'
+            ? '没能确认这份登录态（loginuser.get 没有给出明确结论，可能是网络问题）。现有登录态没有被改动，请稍后重试。'
+            : '这份登录态服务端不认（loginuser.get 返回会话失效）：可能已经过期，或复制时缺了 cookie2。现有登录态没有被改动。',
+      };
+    }
+
+    const store = new FileCookieStore({ file, logger: this.logger });
+    store.loginAt = Date.now();
+    await store.save(jar);
+
+    this.session = 'valid';
+    this.lastError = null;
+    this.lastErrorFromCycle = false;
+    this.logger.info(`已导入登录态（${jar.size} 个 cookie，来自手动粘贴）`, 'web');
+    this.#resumeStoppedTasks();
+    if (!this.running && !this.starting) {
+      await this.start().catch((error) => this.logger.warn(`导入登录态后自动启动失败：${error.message}`, 'web'));
+    }
+    this.#stateChanged();
+    return { ok: true, count: jar.size };
+  }
+
+  /**
+   * 用**还没落盘**的一份 cookie 问一次登录态。
+   *
+   * 借一个临时文件：搜索器只认 `config.search.cookieFile` 这个路径，而真实文件此刻可能还是
+   * 旧的那一份（还能用）——不能为了校验就把它覆盖掉。
+   *
+   * @param {Map<string, any>} jar cookie 集合。
+   * @returns {Promise<'valid'|'invalid'|'unknown'>} 服务端结论。
+   */
+  async #probeJar(jar) {
+    const tempFile = path.join(tmpdir(), `xianyu-import-${process.pid}-${Date.now()}.json`);
+    try {
+      const store = new FileCookieStore({ file: tempFile, logger: this.logger });
+      await store.save(jar);
+      const config = { ...this.config, search: { ...this.config.search, cookieFile: tempFile } };
+      const searcher = this.createSearcher
+        ? await this.createSearcher({ config, logger: this.logger })
+        : await (await import('./mtop.mjs')).createSearcher({ config, logger: this.logger });
+      return await searcher.checkSession();
+    } catch (error) {
+      this.logger.warn(`校验导入的登录态时出错：${error.message}`, 'web');
+      return 'unknown';
+    } finally {
+      try {
+        unlinkSync(tempFile);
+      } catch {
+        /* 临时文件清不掉不影响结果 */
+      }
+    }
   }
 
   /**

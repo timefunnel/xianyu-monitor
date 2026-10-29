@@ -473,3 +473,33 @@ test('首页返回控制台 HTML（前端文件存在时）', async () => {
     await console_.close();
   }
 });
+
+test('导入登录态：内容为空给 400，正常内容转给 supervisor', async () => {
+  const supervisor = fakeSupervisor({
+    importCookies: async (text) => {
+      supervisor.calls.push(['importCookies', text]);
+      return { ok: true, count: 12 };
+    },
+  });
+  const console_ = await withConsole(supervisor);
+  try {
+    const empty = await fetch(`${console_.base}/api/login-import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cookies: '  ' }),
+    });
+    assert.equal(empty.status, 400);
+    assert.match((await empty.json()).error, /cookies 必填/);
+
+    const ok = await fetch(`${console_.base}/api/login-import`, {
+      method: 'POST',
+      headers: { 'content-type': 'application/json' },
+      body: JSON.stringify({ cookies: 'unb=u; cookie2=c' }),
+    });
+    assert.equal(ok.status, 200);
+    assert.deepEqual(await ok.json(), { ok: true, count: 12 });
+    assert.deepEqual(supervisor.calls.at(-1), ['importCookies', 'unb=u; cookie2=c']);
+  } finally {
+    await console_.close();
+  }
+});
