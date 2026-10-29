@@ -4,7 +4,7 @@ import assert from 'node:assert/strict';
 import { mkdtempSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import path from 'node:path';
-import { FileCookieStore, defaultCookieFile, parseSetCookie } from '../src/cookies.mjs';
+import { FileCookieStore, defaultCookieFile, parseSetCookie, staleLoginCookie } from '../src/cookies.mjs';
 
 const tempFile = () => path.join(mkdtempSync(path.join(tmpdir(), 'xianyu-cookie-')), 'cookies.json');
 
@@ -102,6 +102,19 @@ test('externallyChanged 只认「别人改过」：自己落的盘不算，外�
   await store.save(new Map([['unb', cookie('3')]]));
   await store.load();
   assert.equal(store.externallyChanged(), false, '自己再写一次后又回到「自己写的那一版」');
+});
+
+test('staleLoginCookie 只把确实过期的 unb 判死，会话级 cookie 不参与判断', () => {
+  const now = Date.now();
+  const jar = (expires) => new Map([['unb', { name: 'unb', value: '1', expires }]]);
+
+  assert.deepEqual(staleLoginCookie(jar(Math.floor(now / 1000) - 1), now), {
+    name: 'unb',
+    expiresAt: (Math.floor(now / 1000) - 1) * 1000,
+  });
+  assert.equal(staleLoginCookie(jar(Math.floor(now / 1000) + 3600), now), null, '还没到期就不算');
+  assert.equal(staleLoginCookie(jar(-1), now), null, 'expires=-1 是会话级 cookie，判断不了就不判');
+  assert.equal(staleLoginCookie(new Map(), now), null, '没有 unb 时不做推断');
 });
 
 

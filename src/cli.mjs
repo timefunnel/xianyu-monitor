@@ -14,7 +14,7 @@ import { existsSync, mkdirSync, readFileSync, writeFileSync } from 'node:fs';
 import path from 'node:path';
 import { loadConfig, withDefaults } from './config.mjs';
 import { createLogger } from './logger.mjs';
-import { createSearcher } from './mtop.mjs';
+import { MtopSearcher, createSearcher } from './mtop.mjs';
 import { FileCookieStore, defaultCookieFile } from './cookies.mjs';
 import { qrLogin } from './qrlogin.mjs';
 import { describeFilters, evaluate } from './rules.mjs';
@@ -125,9 +125,119 @@ async function loginByQr(config, logger, options) {
   logger.info(`登录成功，已写入 ${result.cookies} 个 cookie。监控侧不再需要浏览器。`, 'login');
 }
 
+/**
+ * 用一批**还没落盘**的 cookie 问一次登录态，不写文件。
+ *
+ * 为什么要有它：浏览器登录助手抓到的 cookie 必须先验一次再覆盖磁盘——否则一次失败的登录
+ * 会把原来那份还能用的登录态冲掉（qrlogin 那边也是同样的取舍）。
+ *
+ * @param {any} config 配置。
+ * @param {any} logger 日志器。
+ * @param {Map<string, any>} jar cookie 集合。
+ * @returns {Promise<boolean>} 会话是否有效。
+ */
+async function sessionValidWith(config, logger, jar) {
+  const store = {
+    file: '(浏览器登录，尚未落盘)',
+    async load() {
+      return new Map([...jar].map(([name, cookie]) => [name, { ...cookie }]));
+    },
+    async save() {},
+    isRefused: () => false,
+  };
+  const searcher = new MtopSearcher({ config, logger, cookies: store });
+  return (await searcher.checkSession()) === 'valid';
+}
+
+/**
+ * 浏览器登录：打开真实 Chrome，让人自己用手机号+验证码登录（也可以扫码/密码），
+ * 程序只负责把登录后的 cookie 抓出来落盘。
+ *
+ * 为什么不直接发短信：实测 `/newlogin/sms/send.do` 在发码之前就要求人机验证
+ * （返回 `action=captcha` + `x5secdata`），纯 HTTP 连验证码都发不出去。
+ * 详见 src/browserlogin.mjs 的文件头。
+ *
+ * @param {any} config 配置。
+ * @param {string} configDir 配置所在目录（用来解析 profile 路径）。
+ * @param {any} logger 日志器。
+ * @param {any} options 命令选项（`--timeout` 秒）。
+ * @returns {Promise<void>} 完成后 resolve。
+ */
+async function loginByBrowser(config, configDir, logger, options) {
+  const { browserLogin } = await import('./browserlogin.mjs');
+  const file = config.search?.cookieFile ?? defaultCookieFile(config);
+  const timeoutSeconds = Number(options.timeout ?? 300);
+  const userDataDir = path.resolve(configDir, config.browser?.userDataDir ?? './data/browser-profile');
+  logger.info(`浏览器登录：会打开一个 Chrome 窗口，登录态将写入 ${file}`, 'login');
+  logger.info(`浏览器 profile：${userDataDir}`, 'login');
+
+  const result = await browserLogin({
+    userDataDir,
+    logger,
+    timeoutSeconds,
+    // 超时时留一张现场图：光看「超时」分不清是没人在、页面打不开，还是登录成功但没认出来。
+    screenshotPath: path.join(path.dirname(file), 'login-timeout.png'),
+    verify: (jar) => sessionValidWith(config, logger, jar),
+  });
+
+  const store = new FileCookieStore({ file, logger });
+  store.loginAt = Date.now();
+  await store.save(result.jar);
+  logger.info(
+    `登录成功，已写入 ${result.jar.size} 个 cookie${result.alreadyLoggedIn ? '（复用了这个浏览器里已有的登录态）' : ''}。`,
+    'login',
+  );
+  if (!result.alreadyLoggedIn) {
+    logger.info('监控若跑在别的机器/容器里，把这份 cookies.json 复制过去即可（见 README「登录态与数据」）。', 'login');
+  }
+}
+
+/**
+ * 直接读本机 Chrome 里已有的登录态——不用扫码，也不用输验证码。
+ *
+ * 前提是 Chrome 里已经登录着闲鱼（网页端能正常搜索就够了）。Chrome 对 cookie 库是独占锁，
+ * 所以要先把它完全退出；脚本会等它退出后自动继续。
+ *
+ * @param {any} config 配置。
+ * @param {any} logger 日志器。
+ * @param {any} options 命令选项（`--timeout` 秒）。
+ * @returns {Promise<void>} 完成后 resolve。
+ */
+async function loginFromChromeProfile(config, logger, options) {
+  const { captureFromChromeProfile, chromeUserDataDir } = await import('./browserlogin.mjs');
+  const file = config.search?.cookieFile ?? defaultCookieFile(config);
+  const userDataDir = chromeUserDataDir();
+  if (!userDataDir || !existsSync(userDataDir)) {
+    throw new Error('在这台机器上没找到 Chrome 的 user data 目录。请改用 npm run login:browser。');
+  }
+  logger.info(`读取本机 Chrome 的登录态：${userDataDir}`, 'login');
+  logger.info('如果 Chrome 还开着，请把它**完全退出**（包括托盘图标右键退出）；脚本会自己接手。', 'login');
+
+  const { jar } = await captureFromChromeProfile({
+    userDataDir,
+    logger,
+    timeoutSeconds: Number(options.timeout ?? 600),
+    verify: (candidate) => sessionValidWith(config, logger, candidate),
+  });
+
+  const store = new FileCookieStore({ file, logger });
+  store.loginAt = Date.now();
+  await store.save(jar);
+  logger.info(`已从 Chrome 取到 ${jar.size} 个 cookie 并写入 ${file}。`, 'login');
+}
+
 const commands = {
   /** 扫码登录：纯 HTTP，二维码直接打在终端里（实现见文件上方的 loginByQr）。 */
-  async login({ config }, logger, options) {
+  async login({ config, configDir }, logger, options) {
+    // 三条路：读本机 Chrome（最省事）> 打开浏览器人工登录 > 纯 HTTP 扫码（服务器上也能用）。
+    if (options['from-chrome'] === true || options['from-chrome'] === 'true') {
+      await loginFromChromeProfile(config, logger, options);
+      return;
+    }
+    if (options.browser === true || options.browser === 'true') {
+      await loginByBrowser(config, configDir, logger, options);
+      return;
+    }
     await loginByQr(config, logger, options);
   },
 
@@ -311,7 +421,8 @@ if (command === 'help' || options.help) {
   process.stdout.write(
     '用法：node src/cli.mjs <web|run|login|check|once|dump|test-notify> [--config 路径] [--task 名称]\n' +
       '  web 支持 --port --host --token --no-open\n' +
-      '  login：二维码打在终端里，不需要浏览器/图形界面；--timeout 秒\n',
+      '  login：二维码打在终端里，不需要浏览器/图形界面；--timeout 秒\n' +
+      '         --browser：打开真实 Chrome，用手机号+验证码（或扫码/密码）登录，登录完自动取 cookie（需要图形界面）\n',
   );
   process.exit(0);
 }

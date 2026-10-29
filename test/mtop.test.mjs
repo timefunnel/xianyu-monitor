@@ -591,11 +591,12 @@ test('间隔设为 0 时不做任何等待（留给需要急速验证的场合�
   assert.ok(Date.now() - started < 200, '显式把间隔设成 0 时不应该还有等待');
 });
 
-test('RGV587 且平台下发 x5secdata 时，判定为「要人机验证」而不是登录失效', async () => {
+test('RGV587 + x5secdata，但会话确实有效时，才判定为「要人机验证」', async () => {
   // 实测：刚扫码登录成功、unb 还有 3 天有效期，搜索仍被 RGV587 拦下并送来 x5secdata。
   // 那时候让人去重新登录是错的——会陷入「登录成功 → 一搜就被拒 → 又叫你去登录」的死循环。
   const { searcher, calls } = makeSearcher([
     response({ ret: ['RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试!'], data: {} }, ['x5secdata=abc123; Path=/']),
+    response({ ret: ['SUCCESS::调用成功'], data: {} }),
   ]);
 
   await assert.rejects(
@@ -607,5 +608,48 @@ test('RGV587 且平台下发 x5secdata 时，判定为「要人机验证」而�
       /重新扫码不会好/.test(error.message),
     '要验证 ≠ 登录失效',
   );
-  assert.equal(calls.length, 1, '既然是"要验证"，就不该再多花一次 loginuser.get');
+  assert.equal(calls.length, 2, '有 x5secdata 也要先问一句 loginuser.get，不能凭它断定会话还活着');
+  assert.ok(calls[1].url.includes('loginuser.get'), calls[1].url);
+});
+
+test('RGV587 + x5secdata 且会话已被平台作废时，报「重新登录」而不是让人干等冷却', async () => {
+  // 线上实测：unb 还剩 2 天，但平台在风控时把会话一起作废了。
+  // 旧逻辑看到 x5secdata 就断言「这不是登录态失效，重新扫码不会好」，人于是永远卡在等冷却上。
+  const { searcher, calls } = makeSearcher([
+    response({ ret: ['RGV587_ERROR::SM::哎哟喂,被挤爆啦,请稍后重试!'], data: {} }, ['x5secdata=abc123; Path=/']),
+    response({ ret: ['FAIL_SYS_SESSION_EXPIRED::Session过期'], data: {} }),
+  ]);
+
+  await assert.rejects(
+    () => searcher.search({ name: 't', keyword: 'x' }),
+    (error) =>
+      error.code === 'auth' &&
+      error.needsRelogin === true &&
+      /重新扫码登录/.test(error.message) &&
+      /会话已经失效/.test(error.message) &&
+      !/重新扫码不会好/.test(error.message),
+    'x5secdata 不能掩盖「会话已经死了」这个事实',
+  );
+  assert.equal(calls.length, 2);
+});
+
+test('cookie 文件里的 unb 已经过期时，直接让人重新扫码，不发那次注定被拒的请求', async () => {
+  // 实测踩到的坑：一份 unb 过期 32 天的 cookie 文件，搜索回的是 RGV587 + x5secdata。
+  // 旧逻辑把它当「要人机验证」，还说「重新扫码不会好」——而网页端明明能搜，人就被卡死在这里。
+  const expiredAt = Math.floor(Date.now() / 1000) - 60;
+  const { searcher, calls } = makeSearcher([success()], [
+    { name: 'unb', value: '2214928720161', expires: expiredAt },
+    { name: '_m_h5_tk', value: 'tok_1700000000000' },
+  ]);
+
+  await assert.rejects(
+    () => searcher.search({ name: 't', keyword: 'x' }),
+    (error) =>
+      error.code === 'auth' &&
+      error.needsRelogin === true &&
+      /过期/.test(error.message) &&
+      /重新扫码登录/.test(error.message) &&
+      !/人机验证/.test(error.message),
+  );
+  assert.equal(calls.length, 0, '本地就能判死，别再发一次只会被拒、还给风控加压的请求');
 });

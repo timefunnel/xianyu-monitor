@@ -194,3 +194,31 @@ export class FileCookieStore {
  * 得到 SESSION_EXPIRED，看上去像账号被封。导出时检查一下，把这种静默残缺变成明确告警。
  */
 export const REQUIRED_COOKIES = ['cookie2'];
+
+/** 带绝对过期时间、过期即等于「没登录」的身份 cookie。 */
+const LOGIN_COOKIES = ['unb'];
+
+/**
+ * 在**本地**判断这份 cookie 文件是不是已经彻底过期，不发任何请求。
+ *
+ * 为什么值得单独做：`unb` 是有明确过期时间的登录身份 cookie（扫码登录后通常给 3 天，之后靠
+ * 每次响应的 `Set-Cookie` 续期）。它一旦过期，服务端对任何接口都只会回 `SESSION_EXPIRED`，
+ * 而搜索接口还会先回一个 `RGV587`「被挤爆啦」+ `x5secdata`——看上去像要求人机验证，于是程序
+ * 让用户去「等冷却 / 过滑块」，而不是重新登录，人就一直卡在那儿。
+ *
+ * 会话级 cookie（`expires <= 0`，如 `cookie2`）不在此列：它们本就没有过期时间，判断不了。
+ *
+ * @param {Map<string, any>} jar cookie 集合。
+ * @param {number} [now] 当前时间戳（测试用）。
+ * @returns {{name: string, expiresAt: number}|null} 已过期的身份 cookie；没有则返回 null。
+ */
+export function staleLoginCookie(jar, now = Date.now()) {
+  for (const name of LOGIN_COOKIES) {
+    const cookie = jar?.get?.(name);
+    const seconds = Number(cookie?.expires);
+    if (!cookie || !Number.isFinite(seconds) || seconds <= 0) continue;
+    const expiresAt = seconds * 1000;
+    if (expiresAt <= now) return { name, expiresAt };
+  }
+  return null;
+}

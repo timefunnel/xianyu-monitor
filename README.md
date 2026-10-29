@@ -55,6 +55,7 @@ cp .env.example .env
 
 ```bash
 npm run login          # 用闲鱼 App 扫描终端二维码
+npm run login:browser  # 或者：打开 Chrome，用手机号+验证码登录（需要图形界面）
 npm run check          # 校验配置，不访问闲鱼
 npm run test:notify    # 测试通知渠道
 npm run web            # 启动控制台并开始监控
@@ -221,7 +222,19 @@ node src/cli.mjs once --task macbook-air-m2 --notify
 npm run login
 ```
 
-也可以在其他机器登录后，将 `data/cookies.json` 复制到服务器的同一位置。
+**手机号 + 验证码登录（不想用手机 App 切账号时）**：在有图形界面的机器上运行
+
+```bash
+npm run login:browser
+```
+
+它会打开一个真实 Chrome，停在闲鱼的短信登录页。你输入手机号、收验证码、必要时滑一下验证
+（也可以直接用扫码或密码登录），登录成功后窗口自动关闭，cookie 自动写入 `data/cookies.json`。
+
+为什么会这样：短信接口在**发码之前**就要求人机验证——实测 `POST /newlogin/sms/send.do` 直接返回
+`x5secdata` + `action=captcha`，纯 HTTP 连验证码都发不出去。所以验证这一步必须由真人在真实浏览器里完成，
+程序只负责把登录结果抓下来。服务器/容器没有图形界面，跑不了这条命令；在别的机器登录完，把
+`data/cookies.json` 复制到服务器的同一位置即可。
 
 ## Docker 部署
 

@@ -17,7 +17,7 @@
 
 import { createHash } from 'node:crypto';
 import { classifyResponse, extractItems } from './parse.mjs';
-import { FileCookieStore, defaultCookieFile, parseSetCookie } from './cookies.mjs';
+import { FileCookieStore, defaultCookieFile, parseSetCookie, staleLoginCookie } from './cookies.mjs';
 import { bodyMatchesFilters, nativeFilterSpec } from './search.mjs';
 
 /** 闲鱼网页版 mtop 的固定参数（实测，与页面自己发出的请求一致）。 */
@@ -331,8 +331,28 @@ wrapped.loginAt = this.cookies.loginAt ?? null;
         error.code = 'auth';
         // 重试没有意义：会话已经被服务端判掉，拿它继续打接口只是给它添压力。
         // needsRelogin 让主循环直接停下这个任务，等人工重新登录后再接上。
-error.needsRelogin = true;
-error.loginAt = this.cookies.loginAt ?? null;
+        error.needsRelogin = true;
+        error.loginAt = this.cookies.loginAt ?? null;
+        throw error;
+      }
+      // 本地就能判定的死局：`unb` 都过期了，这份 cookie 不可能再通过鉴权。
+      //
+      // 必须在发请求**之前**拦下。带着死会话去搜，服务端回的是 `RGV587 + x5secdata`，
+      // 那条分支会把它解释成「要人机验证、重新扫码不会好」——而真实原因是登录态没了，
+      // 正好把人引向相反的方向（实测就卡在这里）。
+      const stale = staleLoginCookie(jar);
+      if (stale) {
+        const at = new Date(stale.expiresAt).toLocaleString('zh-CN', { hour12: false });
+        const error = new Error(
+          `登录态已过期：cookie 文件里「${stale.name}」的过期时间是 ${at}，现在已经过了。` +
+            '这不是风控、也不是频率问题——网页端还能搜，是因为浏览器用的是它自己那份会话；' +
+            '程序用的是 cookie 文件里的这一份，已经不能用了。' +
+            '请重新扫码登录（控制台顶部「重新登录」，或 node src/cli.mjs login），登录成功后会自动接上。',
+        );
+        error.code = 'auth';
+        // 重试没有意义：本地已经证明这份登录态死了，再发请求只会被拒、还白白给风控加压力。
+        error.needsRelogin = true;
+        error.loginAt = this.cookies.loginAt ?? null;
         throw error;
       }
       const t = Date.now().toString();
@@ -420,24 +440,21 @@ error.loginAt = this.cookies.loginAt ?? null;
       }
 
       if (verdict.kind === 'throttle') {
-        // 平台下发 `x5secdata` 就是在说「请完成人机验证（滑块）」。这**不是**登录态问题：
-        // 实测刚扫码登录成功、`unb` 还有 3 天有效期，搜索照样被拦——所以让人去重新登录是错的，
-        // 会陷入「登录成功 → 一搜就被拒 → 又叫你去登录」的死循环。
-        if (changedCookies.includes('x5secdata')) {
-          const error = new Error(
-            `搜索被拦（${verdict.message}），平台还下发了 x5secdata —— 它要求完成人机验证（滑块）。` +
-              '这不是登录态失效，重新扫码不会好：请在带同一账号的普通 Chrome 里过一次验证，' +
-              '或者停手几小时让判定冷却（重试只会加深）。跑 node diagnose-risk.mjs 可确认当前形态。',
-          );
-          error.code = 'risk-control';
-          throw error;
-        }
-        // 没有验证凭据时，才用一次最轻的 loginuser.get 去分辨「真被挤爆」和「登录态没了」。
+        // **先问一句登录态，再决定「这是要过验证」还是「这是会话没了」。**
+        //
+        // 以前这里看到 `x5secdata` 就直接判定「要人机验证」，理由是：实测刚扫码登录成功、
+        // `unb` 还有 3 天，搜索照样被拦。但那只说明「有验证凭据时登录态**可能**是好的」，
+        // 并不等于它一定是好的——实测反例：`unb` 还剩 2 天，平台在风控时把会话一起作废了，
+        // `loginuser.get` / `nav` 全回 SESSION_EXPIRED，而本地过期时间看起来完全正常。
+        // 那时还告诉人「重新扫码不会好」，人就永远卡在等冷却上。
+        //
+        // `loginuser.get` 是一次最轻的只读请求，且只在已经被拦的这一轮里发，代价可以接受。
         const session = await this.checkSession();
         if (session === 'invalid') {
           const expired = new Error(
-            `搜索被拦（${verdict.message}），并且已确认登录态失效：这不是频率问题，调大间隔也没用。` +
-              '登录 cookie 已经过期/作废——请重新扫码登录（控制台顶部「重新登录」，或 node src/cli.mjs login），' +
+            `搜索被拦（${verdict.message}），并且 loginuser.get 确认**这份会话已经失效**${changedCookies.includes('x5secdata') ? '（平台在风控时把会话一起作废了）' : ''}。` +
+              '别被 cookie 文件里的过期时间骗了：`unb` 可能还剩几天，但服务端已经不认这份 cookie2。' +
+              '这不是频率问题，等冷却不会自己好——请重新扫码登录（控制台顶部「重新登录」，或 node src/cli.mjs login），' +
               '登录成功后会自动接上。',
           );
           expired.code = 'auth';
@@ -446,6 +463,18 @@ error.loginAt = this.cookies.loginAt ?? null;
           expired.needsRelogin = true;
           expired.loginAt = this.cookies.loginAt ?? null;
           throw expired;
+        }
+        // 会话确认有效、平台又下发了 `x5secdata`：这才是真的要过验证（滑块）。
+        // 让人去重新登录是错的——会陷入「登录成功 → 一搜就被拒 → 又叫你去登录」的死循环。
+        if (changedCookies.includes('x5secdata')) {
+          const error = new Error(
+            `搜索被拦（${verdict.message}），平台还下发了 x5secdata —— 它要求完成人机验证（滑块）。` +
+              '会话本身是有效的（loginuser.get 通过），所以重新扫码不会好：' +
+              '请在带同一账号的普通 Chrome 里过一次验证，或者停手几小时让判定冷却（重试只会加深）。' +
+              '跑 node diagnose-risk.mjs 可确认当前形态。',
+          );
+          error.code = 'risk-control';
+          throw error;
         }
         const error = new Error(
           `请求被闲鱼拦截（${verdict.message}）。该错误码在「访问频率过高」和「登录态失效」两种情况下都会出现：` +
