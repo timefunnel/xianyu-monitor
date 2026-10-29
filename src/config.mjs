@@ -7,6 +7,7 @@ import { existsSync, readFileSync } from 'node:fs';
 import path from 'node:path';
 import { pathToFileURL } from 'node:url';
 import { validateChannels } from './notify.mjs';
+import { isValidRegion } from './search.mjs';
 
 const ENV_PATTERN = /\$\{([A-Za-z_][A-Za-z0-9_]*)\}/g;
 
@@ -114,8 +115,11 @@ export function validateConfig(config) {
           } else if (Array.isArray(range) && range[0] > range[1]) {
             problems.push(`${where}.nativeFilters.priceRange 最低价不能大于最高价`);
           }
-          if ('region' in native && (typeof native.region !== 'string' || native.region.trim() === '')) {
-            problems.push(`${where}.nativeFilters.region 必须是非空字符串，且要与闲鱼区域面板上的文字一致（如 江浙沪 / 上海）`);
+          if ('region' in native && !isValidRegion(native.region)) {
+            problems.push(
+              `${where}.nativeFilters.region 必须是非空字符串，且要与闲鱼区域面板上的文字一致：`
+                + '预设写 江浙沪 / 珠三角 / 京津冀 / 东三省 / 全国，省写 浙江，只到市写 浙江/杭州（省/市用斜杠分开）',
+            );
           }
           // 「新发布」下拉里的两项：最新=排序，N天内=发布时间窗
           if ('sort' in native && native.sort !== 'newest') {

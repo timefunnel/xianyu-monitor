@@ -3,7 +3,7 @@ import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
-import { bodyMatchesFilters, nativeFilterSpec } from '../src/search.mjs';
+import { bodyMatchesFilters, isValidRegion, nativeFilterSpec, parseRegion } from '../src/search.mjs';
 
 const here = path.dirname(fileURLToPath(import.meta.url));
 const fixture = JSON.parse(readFileSync(path.join(here, 'fixtures', 'search-response.json'), 'utf8'));
@@ -191,6 +191,19 @@ test('nativeFilterSpec 把任务条件算成筛选描述与热页面标识', () 
   assert.equal(spec.region, '江浙沪');
   assert.match(spec.key, /江浙沪/);
   assert.notEqual(spec.key, nativeFilterSpec({ keyword: '别的', nativeFilters: { priceRange: [500, 700], region: '江浙沪' } }).key);
+});
+
+test('parseRegion 把「省/市」写法翻译成 divisionList 的两级形态', () => {
+  assert.deepEqual(parseRegion('江浙沪'), { extraDivision: '江浙沪' });
+  assert.deepEqual(parseRegion('浙江'), { entry: { province: '浙江' } });
+  assert.deepEqual(parseRegion(' 浙江 / 杭州 '), { entry: { province: '浙江', city: '杭州' } });
+  assert.deepEqual(parseRegion('上海'), { entry: { province: '上海' } }, '直辖市只有一级');
+  assert.equal(parseRegion(''), null);
+  assert.equal(parseRegion('/杭州'), null, '缺省名不算数');
+  assert.equal(parseRegion(undefined), null);
+  assert.equal(isValidRegion('浙江/杭州'), true);
+  assert.equal(isValidRegion('  '), false);
+  assert.equal(isValidRegion(42), false);
 });
 
 test('bodyMatchesFilters 按实际字段判定筛选是否带上', () => {

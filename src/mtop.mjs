@@ -18,7 +18,7 @@
 import { createHash } from 'node:crypto';
 import { classifyResponse, extractItems } from './parse.mjs';
 import { FileCookieStore, defaultCookieFile, parseSetCookie, staleLoginCookie } from './cookies.mjs';
-import { bodyMatchesFilters, nativeFilterSpec } from './search.mjs';
+import { bodyMatchesFilters, nativeFilterSpec, parseRegion, REGION_PRESETS } from './search.mjs';
 
 /** 闲鱼网页版 mtop 的固定参数（实测，与页面自己发出的请求一致）。 */
 export const MTOP = {
@@ -53,8 +53,7 @@ const LOGIN_CHECK_API = 'mtop.taobao.idlemessage.pc.loginuser.get';
 /** 会被风控标记、需要按需摘掉的状态 cookie（理由见 browser.mjs 里的同名常量）。 */
 const RISK_STATE_COOKIES = ['sgcookie'];
 
-/** 闲鱼「区域」筛选里的预设值；不在这张表里的按具体省份处理。 */
-export const REGION_PRESETS = new Set(['江浙沪', '珠三角', '京津冀', '东三省', '全国']);
+export { REGION_PRESETS };
 
 /** 浏览器 UA。搜索走的是网页版的接口，带上与页面一致的 UA。 */
 export const USER_AGENT =
@@ -84,7 +83,8 @@ export function tokenOf(value) {
  *
  * 字段布局对齐页面实际发出的请求（也见开源项目 goofish-client 的同名构造器）：
  *  - 价格与发布时间窗 → `propValueStr.searchFilter`，分号分隔，形如 `priceRange:500,700;publishDays:3;`
- *  - 区域预设 → `extraFilterValue.extraDivision`；具体省份 → `extraFilterValue.divisionList`
+ *  - 区域预设 → `extraFilterValue.extraDivision`；具体省/市 → `extraFilterValue.divisionList`
+ *    （`浙江/杭州` 这种写法会带上 `city`）
  *  - 「最新」是排序 → 顶层的 `sortField`/`sortValue`，不进 searchFilter
  *
  * @param {any} task 任务配置。
@@ -100,8 +100,9 @@ export function buildSearchBody(task) {
   /** @type {Record<string, unknown>} */
   const extra = {};
   if (spec.region) {
-    if (REGION_PRESETS.has(spec.region)) extra.extraDivision = spec.region;
-    else extra.divisionList = [{ province: spec.region }];
+    const parsed = parseRegion(spec.region);
+    if (parsed?.extraDivision) extra.extraDivision = parsed.extraDivision;
+    else if (parsed?.entry) extra.divisionList = [parsed.entry];
   }
 
   const body = {

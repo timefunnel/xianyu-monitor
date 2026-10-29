@@ -9,6 +9,41 @@
  * 另一件事——**拼出来的请求体真的带上了全部条件**，对不上就宁可报错也不推，避免静默推送范围外的商品。
  */
 
+/** 闲鱼「区域」面板里的预设值；不在这张表里的按具体省/市处理。 */
+export const REGION_PRESETS = new Set(['江浙沪', '珠三角', '京津冀', '东三省', '全国']);
+
+/**
+ * 把配置里的地区写法翻译成请求体要的形态。
+ *
+ * 闲鱼区域面板是「省 → 市」两级：只选省发 `{province:"浙江"}`，再选到市发
+ * `{province:"浙江", city:"杭州"}`。所以配置里用 `/` 分隔省和市：
+ *
+ *   - `江浙沪`      → 预设，走 `extraDivision`
+ *   - `浙江`        → `[{province:"浙江"}]`
+ *   - `浙江/杭州`   → `[{province:"浙江", city:"杭州"}]`
+ *   - `上海`        → `[{province:"上海"}]`（直辖市只有一级）
+ *
+ * @param {unknown} value 配置里的 `nativeFilters.region`。
+ * @returns {{extraDivision: string}|{entry: {province: string, city?: string}}|null} 解析结果。
+ */
+export function parseRegion(value) {
+  if (typeof value !== 'string') return null;
+  const text = value.trim();
+  if (text === '') return null;
+  if (REGION_PRESETS.has(text)) return { extraDivision: text };
+  const [province, city] = text.split('/').map((part) => part.trim());
+  if (!province) return null;
+  return { entry: city ? { province, city } : { province } };
+}
+
+/** 地区写法是否合法（省名必填；用 `/` 时市名也要填）。 */
+export function isValidRegion(value) {
+  if (typeof value !== 'string') return false;
+  const text = value.trim();
+  if (text === '') return false;
+  return parseRegion(text) !== null;
+}
+
 /**
  * 解析任务要施加的原生筛选，并算出热页面标识。
  * 标识变了（换关键词、改条件）就必须重新加载页面，不能复用热页面。
@@ -18,7 +53,8 @@
 export function nativeFilterSpec(task) {
   const range = task.nativeFilters?.priceRange;
   const priceRange = Array.isArray(range) && range.length === 2 ? range : null;
-  const region = typeof task.nativeFilters?.region === 'string' && task.nativeFilters.region !== '' ? task.nativeFilters.region : null;
+  const rawRegion = task.nativeFilters?.region;
+  const region = isValidRegion(rawRegion) ? rawRegion.trim() : null;
   // 「新发布 → 最新」是排序（请求体里的 sortField/sortValue），
   // 「新发布 → N天内」是筛选（和价格共用 propValueStr.searchFilter）。
   const sort = task.nativeFilters?.sort === 'newest' ? 'newest' : null;
@@ -57,7 +93,8 @@ function readSearchBody(postData) {
  * 价格在 `propValueStr.searchFilter`（形如 `priceRange:500,700;`）。
  * 区域有两个位置，取决于用户选的是预设还是具体省份（实测）：
  *   - 预设（江浙沪/珠三角/京津冀/东三省）：`extraFilterValue.extraDivision`
- *   - 具体省份/城市：`extraFilterValue.divisionList`，形如 `[{"province":"上海"}]`
+ *   - 具体省/市：`extraFilterValue.divisionList`，形如 `[{"province":"上海"}]`、
+ *     `[{"province":"浙江","city":"杭州"}]`（选了市才会带 city）
  * 只看 `extraDivision` 会把省份选择误判成「筛选没生效」。
  *
  * @param {any} body 解析后的请求体。
@@ -82,5 +119,14 @@ export function bodyMatchesFilters(body, spec) {
   }
   if (extra.extraDivision === spec.region) return true;
   if (!Array.isArray(extra.divisionList)) return false;
-  return extra.divisionList.some((entry) => entry && (entry.province === spec.region || entry.city === spec.region));
+  const parsed = parseRegion(spec.region);
+  if (!parsed?.entry) return false;
+  const want = parsed.entry;
+  return extra.divisionList.some((entry) => {
+    if (!entry) return false;
+    // 写了市就必须省市都对上，避免「只选省」被当成市级筛选生效。
+    if (want.city) return entry.province === want.province && entry.city === want.city;
+    // 只写一个名字时保持宽松：省名或市名命中都算（兼容历史配置里直接写「杭州」）。
+    return entry.province === want.province || entry.city === want.province;
+  });
 }

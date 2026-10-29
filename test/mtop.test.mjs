@@ -150,6 +150,15 @@ test('buildSearchBody 对具体省份用 divisionList，而不是 extraDivision'
   assert.equal(body.extraFilterValue, '{"divisionList":[{"province":"上海"}]}');
 });
 
+test('buildSearchBody 对「省/市」写法带上 city（闲鱼区域面板是省→市两级）', () => {
+  const { body, spec } = buildSearchBody({ keyword: 'k', nativeFilters: { region: '浙江/杭州' } });
+  assert.equal(body.extraFilterValue, '{"divisionList":[{"province":"浙江","city":"杭州"}]}');
+  assert.equal(bodyMatchesFilters(body, spec), true);
+  // 只选到省的同名请求体不能被判成「市级筛选生效了」
+  const provinceOnly = JSON.parse('{"divisionList":[{"province":"浙江"}]}');
+  assert.equal(bodyMatchesFilters({ ...body, extraFilterValue: JSON.stringify(provinceOnly) }, spec), false);
+});
+
 test('buildSearchBody 没有原生筛选时字段留空但仍然齐全', () => {
   const { body, spec } = buildSearchBody({ keyword: 'k' });
   assert.equal(body.propValueStr.searchFilter, '');
