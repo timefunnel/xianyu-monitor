@@ -6,6 +6,9 @@
 //      会把磁盘上那份还能用的登录态冲掉。
 import { test } from 'node:test';
 import assert from 'node:assert/strict';
+import { existsSync, mkdirSync, mkdtempSync, rmSync, writeFileSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import {
   authFingerprint,
   browserLogin,
@@ -15,6 +18,7 @@ import {
   isChromeRunning,
   isProfileBusy,
   isSiteDomain,
+  prepareProfileCopy,
 } from '../src/browserlogin.mjs';
 
 const cookie = (name, value, domain = '.goofish.com') => ({ name, value, domain, path: '/', expires: -1 });
@@ -172,6 +176,7 @@ test('从 Chrome 读登录态：先等它退出，再抓 cookie 并校验', asyn
   const result = await captureFromChromeProfile({
     chromeRunning: async () => false,
     userDataDir: '(test)',
+    prepareProfile: () => '(copy)',
     timeoutSeconds: 5,
     pollIntervalMs: 1,
     launch: async () => {
@@ -193,6 +198,7 @@ test('从 Chrome 读到的会话服务端不认时，明确报错而不是写盘
       captureFromChromeProfile({
         chromeRunning: async () => false,
         userDataDir: '(test)',
+        prepareProfile: () => '(copy)',
         timeoutSeconds: 5,
         pollIntervalMs: 1,
         launch: async () => context,
@@ -203,19 +209,20 @@ test('从 Chrome 读到的会话服务端不认时，明确报错而不是写盘
   assert.equal(context.closed, true);
 });
 
-test('从 Chrome 里根本没有登录痕迹时，说清楚要先在 Chrome 登录', async () => {
+test('从 Chrome 里读不到登录态时，说明是应用绑定加密并给出粘贴导入这条路', async () => {
   const context = fakeBrowser([cookie('cookie2', 'c-only')]);
   await assert.rejects(
     () =>
       captureFromChromeProfile({
         chromeRunning: async () => false,
         userDataDir: '(test)',
+        prepareProfile: () => '(copy)',
         timeoutSeconds: 5,
         pollIntervalMs: 1,
         launch: async () => context,
         verify: async () => true,
       }),
-    /没有登录态的痕迹/,
+    /应用绑定加密/,
   );
 });
 
@@ -227,6 +234,7 @@ test('Chrome 还开着时不去反复启动它，只安静地等进程消失', a
   let launches = 0;
   const result = await captureFromChromeProfile({
     userDataDir: '(test)',
+    prepareProfile: () => '(copy)',
     timeoutSeconds: 10,
     pollIntervalMs: 1,
     chromeRunning: async () => running-- > 0,
@@ -250,4 +258,38 @@ test('isChromeRunning 认得出进程在不在，命令失败时按「不在」�
     }),
     false,
   );
+});
+
+test('复制默认 profile 时只搬登录态要用的文件，搬完能启动、用完能删', async () => {
+  // 线上踩过：Chrome 136 起拒绝把默认 profile 直接当 --user-data-dir
+  //（"DevTools remote debugging requires a non-default data directory."），
+  // 所以必须先复制出副本。这里验证副本内容够用（含 Local State 里的解密密钥），用完删掉。
+  const real = mkdtempSync(path.join(tmpdir(), 'xianyu-real-profile-'));
+  mkdirSync(path.join(real, 'Default', 'Network'), { recursive: true });
+  writeFileSync(path.join(real, 'Local State'), '{"os_crypt":{}}', 'utf8');
+  writeFileSync(path.join(real, 'Default', 'Network', 'Cookies'), 'SQLite format 3', 'utf8');
+
+  let launched = null;
+  const context = fakeBrowser([cookie('unb', 'u'), cookie('cookie2', 'c')]);
+  const result = await captureFromChromeProfile({
+    userDataDir: real,
+    chromeRunning: async () => false,
+    timeoutSeconds: 5,
+    pollIntervalMs: 1,
+    launch: async (options) => {
+      launched = options.userDataDir;
+      assert.notEqual(launched, real, '绝不能把默认 profile 直接交给 Chrome');
+      assert.ok(existsSync(path.join(launched, 'Local State')), '解密密钥要跟着副本走');
+      assert.ok(existsSync(path.join(launched, 'Default', 'Network', 'Cookies')), 'cookie 库要跟着副本走');
+      return context;
+    },
+    verify: async () => true,
+  });
+  assert.equal(result.jar.get('unb').value, 'u');
+  assert.equal(existsSync(launched), false, '用完把临时副本删掉，别把 cookie 留在临时目录');
+});
+
+test('默认 profile 里找不到 cookie 库时，明确报错而不是造一个空 profile 去启动', () => {
+  const empty = mkdtempSync(path.join(tmpdir(), 'xianyu-empty-profile-'));
+  assert.throws(() => prepareProfileCopy(empty), /没在这个目录里找到/);
 });

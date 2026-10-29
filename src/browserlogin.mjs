@@ -18,6 +18,9 @@
  */
 
 import { execFile } from 'node:child_process';
+import { copyFileSync, existsSync, mkdirSync, mkdtempSync, rmSync } from 'node:fs';
+import { tmpdir } from 'node:os';
+import path from 'node:path';
 import { promisify } from 'node:util';
 
 /** `tasklist` / `pgrep` 的 promisify 版：只用来判断"Chrome 还在不在"。 */
@@ -232,6 +235,77 @@ export async function isChromeRunning(exec = execFileAsync) {
 }
 
 /**
+ * 把默认 profile 里**登录态需要的那几个文件**复制到临时目录，返回临时 user data 目录。
+ *
+ * 为什么非要复制：Chrome 136 起直接拒绝用 `--user-data-dir` 指向默认 profile
+ * （实测报 “DevTools remote debugging requires a non-default data directory.”），
+ * 不管参数怎么写都起不来。而 cookie 库是 DPAPI/ABE 加密的，自己解析等于重写一遍
+ * Chrome 的加密栈；但复制出来的副本仍由同一个 chrome.exe、同一个 Windows 用户解密——
+ * 只要把 `Local State`（密钥在里头）和 cookie 库一起搬过去，Chrome 自己就能读。
+ *
+ * 只搬几个文件而不是整个目录：这台机器的 Chrome 目录有 22 GB，复制整个 profile 要几分钟
+ * 且毫无必要。
+ *
+ * @param {string} userDataDir 真实 profile 目录。
+ * @returns {string} 临时目录（调用方负责清理）。
+ */
+export function prepareProfileCopy(userDataDir) {
+  const dest = mkdtempSync(path.join(tmpdir(), 'xianyu-profile-'));
+  const pairs = [
+    ['Local State', path.join(dest, 'Local State')],
+    ['Default/Preferences', path.join(dest, 'Default', 'Preferences')],
+    // Chrome 96 起 cookie 库在这里；老版本在 Default/Cookies，两个都试。
+    ['Default/Network/Cookies', path.join(dest, 'Default', 'Network', 'Cookies')],
+    ['Default/Cookies', path.join(dest, 'Default', 'Cookies')],
+  ];
+  let copied = 0;
+  try {
+    for (const [from, to] of pairs) {
+      const source = path.join(userDataDir, ...from.split('/'));
+      if (!existsSync(source)) continue;
+      mkdirSync(path.dirname(to), { recursive: true });
+      copyFileSync(source, to);
+      if (from.endsWith('Cookies')) copied += 1;
+    }
+  } catch (error) {
+    rmSync(dest, { recursive: true, force: true });
+    throw error;
+  }
+  if (copied === 0) {
+    rmSync(dest, { recursive: true, force: true });
+    const error = new Error(`没在这个目录里找到 Chrome 的 cookie 库：${userDataDir}`);
+    error.code = 'copy-failed';
+    throw error;
+  }
+  return dest;
+}
+
+/**
+ * 复制失败是不是因为 Chrome 又抢先打开了数据库（用户重新开了浏览器）。
+ * @param {any} error 复制时抛出的错误。
+ * @returns {boolean} 是否只是暂时被占用。
+ */
+export function isProfileLocked(error) {
+  return /EBUSY|EPERM|EACCES|locked|另一个程序正在使用|being used by another process/i.test(String(error?.message ?? ''));
+}
+
+/**
+ * 删掉临时 profile 副本。
+ *
+ * Chrome 退出后还会留几个后台进程几秒，删不掉不算错——临时目录留给系统清理。
+ * @param {string|null} dir 临时目录。
+ * @returns {void}
+ */
+export function cleanupProfileCopy(dir) {
+  if (!dir) return;
+  try {
+    rmSync(dir, { recursive: true, force: true, maxRetries: 3, retryDelay: 500 });
+  } catch {
+    /* 留着也无妨 */
+  }
+}
+
+/**
  * 本机 Chrome 的 user data 目录（真正在用的那份 profile）。
  *
  * @param {Record<string, string|undefined>} [env] 环境变量（测试用）。
@@ -272,12 +346,10 @@ export function isProfileBusy(error) {
  *
  * 前提是这份 Chrome 里已经登录着闲鱼（网页端能正常搜索就够了）。流程：
  *   1. 等 Chrome 完全退出（cookie 库是独占锁，运行中读不了）；
- *   2. 用同一份 profile 起一个**无头** Chrome，打开闲鱼首页；
- *   3. 通过 CDP 读 cookie（解密由 Chrome 自己做，不碰 DPAPI/ABE）；
- *   4. 校验一次 loginuser.get，通过才返回。
- *
- * 为什么不是"复制 profile"：实测这台机器的 Chrome 目录 22 GB，而且 `Network/Cookies`
- * 在 Chrome 运行时连复制都会被拒绝（独占锁）。等它退出 10 秒，比复制几分钟更划算。
+ *   2. 把 `Local State` + cookie 库复制到临时目录（默认 profile 不能直接拿来启动，见 prepareProfileCopy）；
+ *   3. 用副本起一个**无头** Chrome，打开闲鱼首页；
+ *   4. 通过 CDP 读 cookie（解密由 Chrome 自己做，不碰 DPAPI/ABE）；
+ *   5. 校验一次 loginuser.get，通过才返回。
  *
  * @param {{
  *   userDataDir: string,
@@ -286,9 +358,10 @@ export function isProfileBusy(error) {
  *   pollIntervalMs?: number,
  *   verify: (jar: Map<string, any>) => Promise<boolean>,
  *   launch?: (options: {userDataDir: string, headless: boolean}) => Promise<any>,
+ *   prepareProfile?: (userDataDir: string) => string,
  *   chromeRunning?: () => Promise<boolean>,
  *   now?: () => number,
- * }} options 配置。
+ * }} options 配置（`launch` 与 `prepareProfile` 供测试注入）。
  * @returns {Promise<{jar: Map<string, any>}>} 登录态。
  */
 export async function captureFromChromeProfile({
@@ -298,12 +371,14 @@ export async function captureFromChromeProfile({
   pollIntervalMs = 2000,
   verify,
   launch,
+  prepareProfile = prepareProfileCopy,
   chromeRunning = isChromeRunning,
   now = Date.now,
 }) {
   const openContext = launch ?? defaultLaunch;
   const deadline = now() + timeoutSeconds * 1000;
   let context = null;
+  let profileCopy = null;
   let lastNotice = 0;
   while (!context) {
     if (now() > deadline) {
@@ -321,8 +396,17 @@ export async function captureFromChromeProfile({
       continue;
     }
     try {
-      context = await openContext({ userDataDir, headless: true });
+      // 先做副本，再拿副本启动：默认 profile 直接当 --user-data-dir 会被 Chrome 拒绝。
+      profileCopy = prepareProfile(userDataDir);
+      context = await openContext({ userDataDir: profileCopy, headless: true });
     } catch (error) {
+      cleanupProfileCopy(profileCopy);
+      profileCopy = null;
+      if (isProfileLocked(error)) {
+        logger?.info?.('登录态数据库正被 Chrome 占用，稍后再试…', 'login');
+        await sleep(pollIntervalMs);
+        continue;
+      }
       if (!isProfileBusy(error)) throw error;
       logger?.info?.('登录态数据库仍被占用，稍后再试…', 'login');
       await sleep(pollIntervalMs);
@@ -334,7 +418,16 @@ export async function captureFromChromeProfile({
     await goto(page, HOME_URL);
     const jar = await settle(context);
     if (!jar.has('unb')) {
-      throw new Error('这个 Chrome 里没有登录态的痕迹（没有 unb）。先在 Chrome 里登录闲鱼，再执行一次。');
+      // 实测（2026-10-29，Chrome 141）：Chrome 用「应用绑定加密」(v20) 存 cookie，
+      // 密钥跟可执行文件的身份绑在一起。用副本 profile 启动时 Chrome 解不开，
+      // 会把这些 cookie 当成损坏数据直接删掉——复制出来的库里 2226 条，
+      // 启动后 Chrome 只认 3 条，其余全被清空。所以这条路在新版 Chrome 上必然读不到。
+      throw new Error(
+        '这个 Chrome 的登录态读不出来。Chrome 127+ 用「应用绑定加密」存 cookie，'
+          + '复制出来的 profile 解不开、还会被 Chrome 清掉（实测 2226 条只剩 3 条）。'
+          + '请改用：在 Chrome 里登录闲鱼后，F12 → 网络 → 复制任意请求的 Cookie 请求头，'
+          + '粘到控制台「重新登录」的输入框里导入。',
+      );
     }
     if (!(await verify(jar))) {
       throw new Error('读到了 cookie，但服务端不认——这份 Chrome 会话可能已经失效，请重新在 Chrome 里登录闲鱼。');
@@ -342,6 +435,7 @@ export async function captureFromChromeProfile({
     return { jar };
   } finally {
     await context.close?.().catch?.(() => {});
+    cleanupProfileCopy(profileCopy);
   }
 }
 
