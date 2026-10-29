@@ -887,6 +887,8 @@
   .price-row { display: flex; align-items: center; gap: 8px; }
   .price-row .input { flex: 1; min-width: 0; }
   .price-row .sep { color: var(--muted); flex: none; }
+  .region-picker { display: flex; gap: 8px; }
+  .region-picker .input { flex: 1; min-width: 0; }
   details.adv { border: 1px solid var(--border); border-radius: 8px; background: var(--panel2); margin-top: 12px; }
   details.adv > summary { padding: 9px 12px; cursor: pointer; font-size: 13px; list-style: none; }
   details.adv > summary::-webkit-details-marker { display: none; }
@@ -1294,44 +1296,13 @@
       </div>
 
       <div class="field wide">
-        <label class="field-label" for="teRegion">原生地区筛选</label>
-        <input class="input" id="teRegion" type="text" list="regionOptions" autocomplete="off" placeholder="例如 江浙沪">
-        <datalist id="regionOptions">
-          <option value="江浙沪"></option>
-          <option value="珠三角"></option>
-          <option value="京津冀"></option>
-          <option value="东三省"></option>
-          <option value="全国"></option>
-          <option value="北京"></option>
-          <option value="上海"></option>
-          <option value="广东"></option>
-          <option value="江苏"></option>
-          <option value="浙江"></option>
-          <option value="山东"></option>
-          <option value="福建"></option>
-          <option value="四川"></option>
-          <option value="湖北"></option>
-          <option value="湖南"></option>
-          <option value="河南"></option>
-          <option value="河北"></option>
-          <option value="安徽"></option>
-          <option value="陕西"></option>
-          <option value="重庆"></option>
-          <option value="天津"></option>
-          <option value="辽宁"></option>
-          <option value="吉林"></option>
-          <option value="黑龙江"></option>
-          <option value="江西"></option>
-          <option value="广西"></option>
-          <option value="云南"></option>
-          <option value="贵州"></option>
-          <option value="山西"></option>
-          <option value="内蒙古"></option>
-          <option value="新疆"></option>
-          <option value="甘肃"></option>
-          <option value="海南"></option>
-        </datalist>
-        <div class="hint">预设写 江浙沪 / 珠三角；只到省写 浙江；只到市写 <b>浙江/杭州</b>（省/市用斜杠分开）。留空表示不做地区筛选，要和闲鱼区域面板文字一致</div>
+        <label class="field-label">原生地区筛选</label>
+        <div class="region-picker">
+          <select class="input" id="teRegionArea" aria-label="原生地区筛选：区域或省份"></select>
+          <select class="input" id="teRegionCity" aria-label="原生地区筛选：城市" disabled></select>
+        </div>
+        <input id="teRegion" type="hidden" value="">
+        <div class="hint">由闲鱼服务端过滤：选「江浙沪」这类预设是整片区域，选到省是全省，再选市就只筛那个市。留空表示不做地区筛选</div>
         <div class="field-error" data-err="region" hidden></div>
       </div>
 
@@ -3355,6 +3326,96 @@ function numberOrNull(raw) {
   return Number.isFinite(value) ? value : NaN;
 }
 
+/* ---------- 原生地区筛选：省 / 市 联动 ---------- */
+
+/** 省 → 市（短名，与闲鱼区域面板一致；直辖市与港澳台没有市级）。 */
+const REGION_CITIES = {"北京":[],"天津":[],"河北":["石家庄","唐山","秦皇岛","邯郸","邢台","保定","张家口","承德","沧州","廊坊","衡水"],"山西":["太原","大同","阳泉","长治","晋城","朔州","晋中","运城","忻州","临汾","吕梁"],"内蒙古":["呼和浩特","包头","乌海","赤峰","通辽","鄂尔多斯","呼伦贝尔","巴彦淖尔","乌兰察布","兴安","锡林郭勒","阿拉善"],"辽宁":["沈阳","大连","鞍山","抚顺","本溪","丹东","锦州","营口","阜新","辽阳","盘锦","铁岭","朝阳","葫芦岛"],"吉林":["长春","吉林","四平","辽源","通化","白山","松原","白城","延边"],"黑龙江":["哈尔滨","齐齐哈尔","鸡西","鹤岗","双鸭山","大庆","伊春","佳木斯","七台河","牡丹江","黑河","绥化","大兴安岭"],"上海":[],"江苏":["南京","无锡","徐州","常州","苏州","南通","连云港","淮安","盐城","扬州","镇江","泰州","宿迁"],"浙江":["杭州","宁波","温州","嘉兴","湖州","绍兴","金华","衢州","舟山","台州","丽水"],"安徽":["合肥","芜湖","蚌埠","淮南","马鞍山","淮北","铜陵","安庆","黄山","滁州","阜阳","宿州","六安","亳州","池州","宣城"],"福建":["福州","厦门","莆田","三明","泉州","漳州","南平","龙岩","宁德"],"江西":["南昌","景德镇","萍乡","九江","新余","鹰潭","赣州","吉安","宜春","抚州","上饶"],"山东":["济南","青岛","淄博","枣庄","东营","烟台","潍坊","济宁","泰安","威海","日照","临沂","德州","聊城","滨州","菏泽"],"河南":["郑州","开封","洛阳","平顶山","安阳","鹤壁","新乡","焦作","濮阳","许昌","漯河","三门峡","南阳","商丘","信阳","周口","驻马店"],"湖北":["武汉","黄石","十堰","宜昌","襄阳","鄂州","荆门","孝感","荆州","黄冈","咸宁","随州","恩施"],"湖南":["长沙","株洲","湘潭","衡阳","邵阳","岳阳","常德","张家界","益阳","郴州","永州","怀化","娄底","湘西"],"广东":["广州","韶关","深圳","珠海","汕头","佛山","江门","湛江","茂名","肇庆","惠州","梅州","汕尾","河源","阳江","清远","东莞","中山","潮州","揭阳","云浮"],"广西":["南宁","柳州","桂林","梧州","北海","防城港","钦州","贵港","玉林","百色","贺州","河池","来宾","崇左"],"海南":["海口","三亚","三沙","儋州"],"重庆":[],"四川":["成都","自贡","攀枝花","泸州","德阳","绵阳","广元","遂宁","内江","乐山","南充","眉山","宜宾","广安","达州","雅安","巴中","资阳","阿坝","甘孜","凉山"],"贵州":["贵阳","六盘水","遵义","安顺","毕节","铜仁","黔西南","黔东南","黔南"],"云南":["昆明","曲靖","玉溪","保山","昭通","丽江","普洱","临沧","楚雄","红河","文山","西双版纳","大理","德宏","怒江","迪庆"],"西藏":["拉萨","日喀则","昌都","林芝","山南","那曲","阿里"],"陕西":["西安","铜川","宝鸡","咸阳","渭南","延安","汉中","榆林","安康","商洛"],"甘肃":["兰州","嘉峪关","金昌","白银","天水","武威","张掖","平凉","酒泉","庆阳","定西","陇南","临夏","甘南"],"青海":["西宁","海东","海北","黄南","海南","果洛","玉树","海西"],"宁夏":["银川","石嘴山","吴忠","固原","中卫"],"新疆":["乌鲁木齐","克拉玛依","吐鲁番","哈密","昌吉","博尔塔拉","巴音郭楞","阿克苏","克孜勒苏","喀什","和田","伊犁","塔城","阿勒泰"],"香港":[],"澳门":[],"台湾":[]};
+
+/** 闲鱼区域面板顶部的整片区域。 */
+const REGION_PRESET_NAMES = ['江浙沪', '珠三角', '京津冀', '东三省', '全国'];
+
+/** 首次填充两个下拉：预设 + 各省级行政区。页面加载时调一次。 */
+function initRegionPicker() {
+  const area = $('teRegionArea');
+  area.innerHTML = '';
+  area.appendChild(new Option('不限地区', ''));
+  const presets = document.createElement('optgroup');
+  presets.label = '区域预设';
+  for (const name of REGION_PRESET_NAMES) presets.appendChild(new Option(name, name));
+  area.appendChild(presets);
+  const provinces = document.createElement('optgroup');
+  provinces.label = '按省 / 市';
+  for (const name of Object.keys(REGION_CITIES)) provinces.appendChild(new Option(name, name));
+  area.appendChild(provinces);
+  area.addEventListener('change', () => {
+    fillRegionCities(area.value);
+    syncRegionValue();
+  });
+  $('teRegionCity').addEventListener('change', syncRegionValue);
+  fillRegionCities('');
+}
+
+/**
+ * 按省填市下拉。直辖市与港澳台没有下级，直接禁用——省下的那一栏填了也没用。
+ * @param {string} province 省名；空表示「不限地区」或预设。
+ */
+function fillRegionCities(province) {
+  const city = $('teRegionCity');
+  const cities = REGION_CITIES[province] || [];
+  city.innerHTML = '';
+  city.appendChild(new Option(cities.length > 0 ? '全省（不限市）' : '该地区没有市级', ''));
+  for (const name of cities) city.appendChild(new Option(name, name));
+  city.disabled = cities.length === 0;
+  city.value = '';
+}
+
+/** 把两个下拉的选择合成配置里那一个字段：`浙江/杭州`、`浙江` 或 `江浙沪`。 */
+function syncRegionValue() {
+  const area = $('teRegionArea').value;
+  const city = $('teRegionCity').value;
+  $('teRegion').value = area && city ? area + '/' + city : area;
+}
+
+/**
+ * 把「浙江省 / 杭州市」这类全称折成面板上的短名（配置可能是手写的，别因为带后缀就当成自定义）。
+ * @param {string} name 地区名。
+ * @returns {string} 短名。
+ */
+function shortRegionName(name) {
+  const text = String(name || '').trim();
+  for (const suffix of ['特别行政区', '维吾尔自治区', '壮族自治区', '回族自治区', '自治区', '省', '市']) {
+    if (text.length > suffix.length && text.endsWith(suffix)) return text.slice(0, -suffix.length);
+  }
+  return text;
+}
+
+/**
+ * 把已有配置值回填到两个下拉。
+ *
+ * 列表里没有的旧写法原样补成一个选项，避免编辑一次就被悄悄改成别的地区。
+ * @param {unknown} value 配置里的 `nativeFilters.region`。
+ */
+function setRegionPicker(value) {
+  const text = toInputValue(value).trim();
+  const slash = text.indexOf('/');
+  const area = shortRegionName(slash > 0 ? text.slice(0, slash) : text);
+  const city = slash > 0 ? shortRegionName(text.slice(slash + 1)) : '';
+  const areaEl = $('teRegionArea');
+  if (area && !REGION_PRESET_NAMES.includes(area) && !(area in REGION_CITIES)) {
+    areaEl.appendChild(new Option(area + '（自定义）', area));
+  }
+  areaEl.value = area;
+  fillRegionCities(area);
+  const cityEl = $('teRegionCity');
+  if (city) {
+    if (!Array.from(cityEl.options).some((option) => option.value === city)) {
+      cityEl.appendChild(new Option(city + '（自定义）', city));
+    }
+    cityEl.value = city;
+  }
+  syncRegionValue();
+}
+
 /** 读取表单（已做 trim / 数字 / 数组转换）。 */
 function readTaskForm() {
   return {
@@ -3510,7 +3571,7 @@ function fillTaskForm(task) {
   $('teJumpLink').value = source.jumpLink === 'web' ? 'web' : 'app';
   $('tePriceMin').value = toInputValue(range[0]);
   $('tePriceMax').value = toInputValue(range[1]);
-  $('teRegion').value = toInputValue(native.region);
+  setRegionPicker(native.region);
   $('teSort').value = native.sort === 'newest' ? 'newest' : '';
   $('tePublishDays').value = native.publishDays ? String(native.publishDays) : '';
   $('teSellerCredit').value = filters.requireSellerCredit ?? '';
@@ -3932,6 +3993,7 @@ function bindEvents() {
 
   // 任务列表：新建 + 任务弹层
   $('taskNewBtn').addEventListener('click', () => openTaskEditor('new'));
+  initRegionPicker();
   $('taskSave').addEventListener('click', submitTaskForm);
   $('taskCancel').addEventListener('click', requestCloseTaskEditor);
   $('taskX').addEventListener('click', requestCloseTaskEditor);

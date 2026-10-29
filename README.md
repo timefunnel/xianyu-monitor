@@ -111,7 +111,7 @@ node src/cli.mjs once --task macbook-air-m2 --notify
 | 配置 | 用途 |
 | --- | --- |
 | `nativeFilters.priceRange` | 闲鱼服务端价格筛选 |
-| `nativeFilters.region` | 闲鱼服务端地区筛选：预设写 `江浙沪`/`珠三角`/`京津冀`/`东三省`/`全国`，只到省写 `浙江`，只到市写 `浙江/杭州`（省和市用 `/` 分开） |
+| `nativeFilters.region` | 闲鱼服务端地区筛选。控制台里是省 / 市两级下拉；手写 JSON 时预设写 `江浙沪`/`珠三角`/`京津冀`/`东三省`/`全国`，只到省写 `浙江`，只到市写 `浙江/杭州`（省和市用 `/` 分开） |
 | `nativeFilters.sort` | 目前只支持 `"newest"` |
 | `nativeFilters.publishDays` | 只看 1、3、7 或 14 天内发布的商品 |
 | `filters.requireKeywords` | 标题至少包含其中一个关键词 |

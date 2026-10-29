@@ -75,6 +75,7 @@ try {
   check('预填了关键词', (await page.inputValue('#teKeyword')) === originalTask.keyword);
   check('预填了价格区间', (await page.inputValue('#tePriceMin')) === String(originalTask.nativeFilters.priceRange[0]));
   check('预填了地区', (await page.inputValue('#teRegion')) === originalTask.nativeFilters.region);
+  check('地区两栏回填到了同一处', (await page.inputValue('#teRegionArea')) === String(originalTask.nativeFilters.region).split('/')[0]);
   check('预填了品牌白名单（逗号分隔）', (await page.inputValue('#teRequireKeywords')).includes('AOC'));
 
   // 只改关键词，其它一律不动
@@ -121,7 +122,8 @@ try {
   await page.fill('#teKeyword', 'UI 测试关键词');
   await page.fill('#tePriceMin', '300');
   await page.fill('#tePriceMax', '400');
-  await page.fill('#teRegion', '上海');
+  await page.selectOption('#teRegionArea', '上海');
+  await page.selectOption('#teRegionCity', '');
   await page.fill('#teExcludeKeywords', ' 求购 , 同款 ,, ');
   await page.locator('.modal-wide').getByRole('button', { name: /保存/ }).first().click({ timeout: 8000 });
   await page.waitForTimeout(3000);
